@@ -1,4 +1,5 @@
 const GRAPH_API_VERSION = process.env.GRAPH_API_VERSION || "v25.0";
+const BASE_URL = process.env.PUBLIC_BASE_URL || "https://tareautp.vercel.app";
 
 function requiredEnv(name) {
   const value = process.env[name];
@@ -27,6 +28,7 @@ async function sendWhatsApp(payload) {
   );
 
   const data = await response.json().catch(() => ({}));
+
   if (!response.ok) {
     console.error("Error de Meta:", response.status, data);
     throw new Error(data?.error?.message || `Meta respondió ${response.status}`);
@@ -43,49 +45,58 @@ async function sendText(to, text) {
   });
 }
 
-async function sendButtons(to, bodyText, buttons, footerText = "Bot de demostración") {
+async function sendWelcomeMenu(to) {
   return sendWhatsApp({
     to,
     type: "interactive",
     interactive: {
       type: "button",
-      body: { text: bodyText },
-      footer: { text: footerText },
+      header: {
+        type: "image",
+        image: {
+          link: `${BASE_URL}/menu.jpg`
+        }
+      },
+      body: {
+        text: "*¡Hola! Bienvenido a Otra Cosita 🍔.*\n¿Qué se te antoja hoy?"
+      },
       action: {
-        buttons: buttons.slice(0, 3).map((button) => ({
-          type: "reply",
-          reply: {
-            id: button.id,
-            title: button.title
+        buttons: [
+          {
+            type: "reply",
+            reply: {
+              id: "HACER_PEDIDO",
+              title: "Hacer Pedido"
+            }
           }
-        }))
+        ]
       }
     }
   });
 }
 
-async function sendMainMenu(to) {
-  return sendButtons(
+async function sendOrderPrompt(to) {
+  return sendWhatsApp({
     to,
-    "👋 Bienvenido. ¿Qué deseas consultar?",
-    [
-      { id: "MENU_VER", title: "Ver menú" },
-      { id: "HORARIOS", title: "Horarios" },
-      { id: "CONTACTO", title: "Contacto" }
-    ]
-  );
-}
-
-async function sendFoodMenu(to) {
-  return sendButtons(
-    to,
-    "🍽️ *MENÚ*\n\n1. Pollo a la brasa — S/ 18\n2. Lomo saltado — S/ 22\n3. Arroz chaufa — S/ 16\n\nSelecciona una opción:",
-    [
-      { id: "PEDIR", title: "Hacer pedido" },
-      { id: "VOLVER", title: "Volver atrás" }
-    ],
-    "Precios de demostración"
-  );
+    type: "interactive",
+    interactive: {
+      type: "button",
+      body: {
+        text: "🍔 *Perfecto.* Envíanos tu pedido en un solo mensaje.\n\nEjemplo:\n2 hamburguesas clásicas\n1 salchipapa\n1 Inca Kola"
+      },
+      action: {
+        buttons: [
+          {
+            type: "reply",
+            reply: {
+              id: "VOLVER_MENU",
+              title: "Volver al menú"
+            }
+          }
+        ]
+      }
+    }
+  });
 }
 
 async function routeMessage(to, message) {
@@ -97,56 +108,18 @@ async function routeMessage(to, message) {
   const action = interactiveId || text;
 
   switch (action) {
-    case "MENU_VER":
-    case "menu":
-    case "ver menu":
-    case "ver menú":
-      return sendFoodMenu(to);
+    case "HACER_PEDIDO":
+      return sendOrderPrompt(to);
 
-    case "HORARIOS":
-    case "horario":
-    case "horarios":
-      return sendButtons(
-        to,
-        "🕒 Atendemos de lunes a domingo, de 11:00 a. m. a 10:00 p. m.",
-        [{ id: "VOLVER", title: "Volver atrás" }]
-      );
-
-    case "CONTACTO":
-    case "contacto":
-      return sendButtons(
-        to,
-        "📞 Teléfono: 999 999 999\n📍 Dirección: Av. Ejemplo 123, Lima",
-        [{ id: "VOLVER", title: "Volver atrás" }]
-      );
-
-    case "PEDIR":
-      return sendButtons(
-        to,
-        "✍️ Escribe tu pedido en un solo mensaje.\nEjemplo: 1 pollo a la brasa y una gaseosa.",
-        [{ id: "VOLVER", title: "Volver atrás" }]
-      );
-
-    case "VOLVER":
-    case "volver":
-    case "atrás":
-    case "atras":
-      return sendMainMenu(to);
-
-    case "hola":
-    case "inicio":
-    case "start":
-    case "":
-      return sendMainMenu(to);
+    case "VOLVER_MENU":
+      return sendWelcomeMenu(to);
 
     default:
-      await sendText(to, "Recibí tu mensaje. Usa los botones para navegar.");
-      return sendMainMenu(to);
+      return sendWelcomeMenu(to);
   }
 }
 
 export default async function handler(req, res) {
-  // Meta usa GET para verificar que la URL del webhook te pertenece.
   if (req.method === "GET") {
     const mode = req.query["hub.mode"];
     const token = req.query["hub.verify_token"];
@@ -159,9 +132,7 @@ export default async function handler(req, res) {
     return res.status(403).send("Token de verificación incorrecto");
   }
 
-  // Meta envía mensajes y estados mediante POST.
   if (req.method === "POST") {
-    // Respondemos 200 incluso cuando solo llega un cambio de estado.
     try {
       const value = req.body?.entry?.[0]?.changes?.[0]?.value;
       const message = value?.messages?.[0];
@@ -176,7 +147,6 @@ export default async function handler(req, res) {
       return res.status(200).json({ received: true });
     } catch (error) {
       console.error("Error procesando webhook:", error);
-      // Devolver 200 evita reintentos infinitos durante la demostración.
       return res.status(200).json({ received: true, bot_error: true });
     }
   }
