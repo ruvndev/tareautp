@@ -1119,7 +1119,7 @@ async function sendCartActions(
         ),
 
         title:
-          "Ver resumen"
+          "Hacer pedido"
       },
 
       {
@@ -1194,9 +1194,7 @@ async function sendConfirmedOrder(
     `Total: *S/ ${money(
       cartTotal(cart)
     )}*\n\n` +
-    "El flujo del pedido quedó completado. " +
-    "Después conectaremos esta confirmación " +
-    "con Google Sheets.",
+    "El flujo del pedido quedó completado.",
 
     [
       {
