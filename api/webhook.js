@@ -1,10 +1,18 @@
 const GRAPH_API_VERSION = process.env.GRAPH_API_VERSION || "v25.0";
-const BASE_URL = process.env.PUBLIC_BASE_URL || "https://tareautp.vercel.app";
 
 function requiredEnv(name) {
-  const value = process.env[name];
-  if (!value) throw new Error(`Falta la variable de entorno ${name}`);
+  const value = process.env[name]?.trim();
+
+  if (!value) {
+    throw new Error(`Falta la variable de entorno ${name}`);
+  }
+
   return value;
+}
+
+function getMenuImageUrl() {
+  const baseUrl = requiredEnv("PUBLIC_BASE_URL").replace(/\/+$/, "");
+  return `${baseUrl}/menu.jpg`;
 }
 
 async function sendWhatsApp(payload) {
@@ -30,35 +38,43 @@ async function sendWhatsApp(payload) {
   const data = await response.json().catch(() => ({}));
 
   if (!response.ok) {
-    console.error("Error de Meta:", response.status, data);
-    throw new Error(data?.error?.message || `Meta respondió ${response.status}`);
+    console.error("Meta rechazó el mensaje:", {
+      status: response.status,
+      error: data?.error || data
+    });
+
+    throw new Error(
+      data?.error?.error_user_msg ||
+      data?.error?.message ||
+      `Meta respondió con HTTP ${response.status}`
+    );
   }
 
+  console.log("Mensaje enviado correctamente:", data);
   return data;
 }
 
-async function sendText(to, text) {
+async function sendMenuImage(to) {
   return sendWhatsApp({
     to,
-    type: "text",
-    text: { body: text, preview_url: false }
+    type: "image",
+    image: {
+      link: getMenuImageUrl(),
+      caption:
+        "*¡Hola! Bienvenido a Otra Cosita 🍔.*\n" +
+        "¿Qué se te antoja hoy?"
+    }
   });
 }
 
-async function sendWelcomeMenu(to) {
+async function sendOrderButton(to) {
   return sendWhatsApp({
     to,
     type: "interactive",
     interactive: {
       type: "button",
-      header: {
-        type: "image",
-        image: {
-          link: `${BASE_URL}/menu.jpg`
-        }
-      },
       body: {
-        text: "*¡Hola! Bienvenido a Otra Cosita 🍔.*\n¿Qué se te antoja hoy?"
+        text: "Pulsa el botón para comenzar tu pedido 👇"
       },
       action: {
         buttons: [
@@ -75,6 +91,12 @@ async function sendWelcomeMenu(to) {
   });
 }
 
+async function sendWelcomeFlow(to) {
+  // Primero envía la imagen y después el botón.
+  await sendMenuImage(to);
+  await sendOrderButton(to);
+}
+
 async function sendOrderPrompt(to) {
   return sendWhatsApp({
     to,
@@ -82,7 +104,13 @@ async function sendOrderPrompt(to) {
     interactive: {
       type: "button",
       body: {
-        text: "🍔 *Perfecto.* Envíanos tu pedido en un solo mensaje.\n\nEjemplo:\n2 hamburguesas clásicas\n1 salchipapa\n1 Inca Kola"
+        text:
+          "🍔 *¡Perfecto!*\n\n" +
+          "Escríbenos tu pedido en un solo mensaje.\n\n" +
+          "Ejemplo:\n" +
+          "2 hamburguesas clásicas\n" +
+          "1 salchipapa\n" +
+          "1 Inca Kola"
       },
       action: {
         buttons: [
@@ -100,54 +128,89 @@ async function sendOrderPrompt(to) {
 }
 
 async function routeMessage(to, message) {
-  const interactiveId =
+  const action =
     message?.interactive?.button_reply?.id ||
-    message?.interactive?.list_reply?.id;
+    message?.interactive?.list_reply?.id ||
+    null;
 
-  const text = message?.text?.body?.trim().toLowerCase() || "";
-  const action = interactiveId || text;
-
-  switch (action) {
-    case "HACER_PEDIDO":
-      return sendOrderPrompt(to);
-
-    case "VOLVER_MENU":
-      return sendWelcomeMenu(to);
-
-    default:
-      return sendWelcomeMenu(to);
+  if (action === "HACER_PEDIDO") {
+    await sendOrderPrompt(to);
+    return;
   }
+
+  if (action === "VOLVER_MENU") {
+    await sendWelcomeFlow(to);
+    return;
+  }
+
+  // Cualquier mensaje normal, imagen, audio, sticker, etc.
+  await sendWelcomeFlow(to);
+}
+
+function extractMessages(body) {
+  const messages = [];
+
+  for (const entry of body?.entry || []) {
+    for (const change of entry?.changes || []) {
+      const value = change?.value;
+
+      for (const message of value?.messages || []) {
+        if (message?.from) {
+          messages.push(message);
+        }
+      }
+    }
+  }
+
+  return messages;
 }
 
 export default async function handler(req, res) {
+  // Meta usa GET para verificar el webhook.
   if (req.method === "GET") {
     const mode = req.query["hub.mode"];
     const token = req.query["hub.verify_token"];
     const challenge = req.query["hub.challenge"];
 
-    if (mode === "subscribe" && token === process.env.VERIFY_TOKEN) {
+    if (
+      mode === "subscribe" &&
+      token === process.env.VERIFY_TOKEN
+    ) {
       return res.status(200).send(challenge);
     }
 
     return res.status(403).send("Token de verificación incorrecto");
   }
 
+  // Meta usa POST para enviar mensajes y estados.
   if (req.method === "POST") {
     try {
-      const value = req.body?.entry?.[0]?.changes?.[0]?.value;
-      const message = value?.messages?.[0];
+      const messages = extractMessages(req.body);
 
-      if (!message) {
-        return res.status(200).json({ received: true, type: "status_or_other_event" });
+      // Los eventos de entrega y lectura no traen mensajes.
+      if (messages.length === 0) {
+        return res.status(200).json({
+          received: true,
+          type: "status_or_other_event"
+        });
       }
 
-      const from = message.from;
-      await routeMessage(from, message);
+      for (const message of messages) {
+        await routeMessage(message.from, message);
+      }
 
-      return res.status(200).json({ received: true });
+      return res.status(200).json({
+        received: true,
+        processed: messages.length
+      });
     } catch (error) {
       console.error("Error procesando webhook:", error);
-      return res.status(200).json({ received: true, bot_error: true });
+
+      return res.status(200).json({
+        received: true,
+        bot_error: true,
+        message: error.message
+      });
     }
   }
 
