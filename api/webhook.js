@@ -5,37 +5,103 @@ const MENU_IMAGE_URL =
   process.env.MENU_IMAGE_URL ||
   "https://tareautp.vercel.app/menu.jpg";
 
+const SHEETS_URL =
+  process.env.GOOGLE_SHEETS_WEBHOOK_URL;
+
+const SHEETS_SECRET =
+  process.env.GOOGLE_SHEETS_SECRET;
+
 /* =========================================================
    CATÁLOGO
 ========================================================= */
 
 const MAKIS = [
-  "Acevichado",
-  "Acevichado Classic",
-  "Nikumaki",
-  "Korean BBQ",
-  "Umimaki",
-  "Sakura",
-  "Furai",
-  "Midori",
-  "Nami",
-  "Otra Cosita",
-  "Kraken"
+  {
+    id: "maki_acevichado",
+    name: "Acevichado"
+  },
+  {
+    id: "maki_acevichado_classic",
+    name: "Acevichado Classic"
+  },
+  {
+    id: "maki_nikumaki",
+    name: "Nikumaki"
+  },
+  {
+    id: "maki_korean_bbq",
+    name: "Korean BBQ"
+  },
+  {
+    id: "maki_umimaki",
+    name: "Umimaki"
+  },
+  {
+    id: "maki_sakura",
+    name: "Sakura"
+  },
+  {
+    id: "maki_furai",
+    name: "Furai"
+  },
+  {
+    id: "maki_midori",
+    name: "Midori"
+  },
+  {
+    id: "maki_nami",
+    name: "Nami"
+  },
+  {
+    id: "maki_otra_cosita",
+    name: "Otra Cosita"
+  },
+  {
+    id: "maki_kraken",
+    name: "Kraken"
+  }
 ];
 
 const ALITAS = [
-  "Acevichadas",
-  "Panko Wings",
-  "Korean BBQ",
-  "Orientales",
-  "Sakura",
-  "Buffalo"
+  {
+    id: "alitas_acevichadas",
+    name: "Acevichadas"
+  },
+  {
+    id: "alitas_panko_wings",
+    name: "Panko Wings"
+  },
+  {
+    id: "alitas_korean_bbq",
+    name: "Korean BBQ"
+  },
+  {
+    id: "alitas_orientales",
+    name: "Orientales"
+  },
+  {
+    id: "alitas_sakura",
+    name: "Sakura"
+  },
+  {
+    id: "alitas_buffalo",
+    name: "Buffalo"
+  }
 ];
 
 const BEBIDAS = [
-  "Inca Cola",
-  "Coca Cola",
-  "Chicha Morada"
+  {
+    id: "bebida_inka_cola",
+    name: "Inca Cola"
+  },
+  {
+    id: "bebida_coca_cola",
+    name: "Coca Cola"
+  },
+  {
+    id: "bebida_chicha_morada",
+    name: "Chicha Morada"
+  }
 ];
 
 const MAKI_SIZES = {
@@ -59,23 +125,14 @@ const MAKI_SIZES = {
 
 const WINGS_PRICE = 24.90;
 const DRINK_PRICE = 5.00;
-
-/*
- * Como todavía no usamos una base de datos,
- * se limita el carrito para que los IDs de WhatsApp
- * no sean demasiado largos.
- */
 const MAX_CART_ITEMS = 8;
 
 /*
- * Evita responder dos veces al mismo webhook
- * cuando Meta reintenta un mensaje.
- *
- * Es solo una protección temporal dentro de cada
- * instancia activa de Vercel.
+ * Protección temporal contra webhooks duplicados.
  */
 const processedMessageIds =
-  globalThis.__otraCositaProcessedMessages || new Set();
+  globalThis.__otraCositaProcessedMessages ||
+  new Set();
 
 globalThis.__otraCositaProcessedMessages =
   processedMessageIds;
@@ -100,16 +157,12 @@ function money(value) {
   return Number(value).toFixed(2);
 }
 
-/*
- * Crea los IDs internos que viajan dentro
- * de botones y opciones de listas.
- */
 function makeAction(...parts) {
   const id = parts.join("|");
 
   if (id.length > 190) {
     throw new Error(
-      "El carrito es demasiado grande para continuar sin una base de datos."
+      "El carrito es demasiado grande para continuar."
     );
   }
 
@@ -117,16 +170,9 @@ function makeAction(...parts) {
 }
 
 /* =========================================================
-   CODIFICAR Y DECODIFICAR CARRITO
+   CODIFICACIÓN DEL CARRITO
 ========================================================= */
 
-/*
- * Ejemplos:
- *
- * m24-0,6  = 24 makis, sabores 0 y 6
- * a5-2     = alitas Buffalo, 2 porciones
- * b1-3     = Coca Cola, 3 unidades
- */
 function encodeCart(cart) {
   if (!cart.length) {
     return "-";
@@ -172,9 +218,6 @@ function decodeCart(encoded) {
     .map((token) => {
       let match;
 
-      /*
-       * Makis
-       */
       match = token.match(
         /^m(12|24|36|48)-([0-9,]+)$/
       );
@@ -189,9 +232,6 @@ function decodeCart(encoded) {
         };
       }
 
-      /*
-       * Alitas
-       */
       match = token.match(
         /^a(\d+)-(\d+)$/
       );
@@ -204,9 +244,6 @@ function decodeCart(encoded) {
         };
       }
 
-      /*
-       * Bebidas
-       */
       match = token.match(
         /^b(\d+)-(\d+)$/
       );
@@ -242,7 +279,7 @@ function encodeSelectedFlavors(values) {
 }
 
 /* =========================================================
-   CÁLCULOS DEL CARRITO
+   CÁLCULOS Y RESUMEN
 ========================================================= */
 
 function cartTotal(cart) {
@@ -257,14 +294,16 @@ function cartTotal(cart) {
     if (item.type === "wings") {
       return (
         total +
-        item.portions * WINGS_PRICE
+        item.portions *
+          WINGS_PRICE
       );
     }
 
     if (item.type === "drink") {
       return (
         total +
-        item.quantity * DRINK_PRICE
+        item.quantity *
+          DRINK_PRICE
       );
     }
 
@@ -272,21 +311,21 @@ function cartTotal(cart) {
   }, 0);
 }
 
-function formatCart(cart, includeTotal = true) {
+function formatCart(
+  cart,
+  includeTotal = true
+) {
   if (!cart.length) {
     return "Tu carrito está vacío.";
   }
 
   const lines = cart.map(
     (item, index) => {
-      /*
-       * Makis
-       */
       if (item.type === "maki") {
         const flavors = item.flavors
           .map(
             (flavorIndex) =>
-              MAKIS[flavorIndex]
+              MAKIS[flavorIndex]?.name
           )
           .filter(Boolean)
           .join(" + ");
@@ -301,36 +340,31 @@ function formatCart(cart, includeTotal = true) {
         );
       }
 
-      /*
-       * Alitas
-       */
       if (item.type === "wings") {
-        const units =
-          item.portions * 6;
-
         const subtotal =
           item.portions *
           WINGS_PRICE;
 
         return (
           `${index + 1}. 🍗 ` +
-          `*Alitas ${ALITAS[item.flavor]}*\n` +
+          `*Alitas ${
+            ALITAS[item.flavor]?.name || ""
+          }*\n` +
           `   ${item.portions} porción(es)` +
-          ` · ${units} unidades\n` +
+          ` · ${item.portions * 6} unidades\n` +
           `   S/ ${money(subtotal)}`
         );
       }
 
-      /*
-       * Bebidas
-       */
       const subtotal =
         item.quantity *
         DRINK_PRICE;
 
       return (
         `${index + 1}. 🥤 ` +
-        `*${BEBIDAS[item.drink]}*\n` +
+        `*${
+          BEBIDAS[item.drink]?.name || ""
+        }*\n` +
         `   ${item.quantity} unidad(es)\n` +
         `   S/ ${money(subtotal)}`
       );
@@ -349,8 +383,202 @@ function formatCart(cart, includeTotal = true) {
   return lines.join("\n\n");
 }
 
+/*
+ * Convierte los productos del carrito
+ * a los Product ID de la pestaña Stock.
+ */
+function cartProductIds(cart) {
+  const ids = [];
+
+  for (const item of cart) {
+    if (item.type === "maki") {
+      for (
+        const flavorIndex
+        of item.flavors
+      ) {
+        const product =
+          MAKIS[flavorIndex];
+
+        if (product) {
+          ids.push(product.id);
+        }
+      }
+    }
+
+    if (item.type === "wings") {
+      const product =
+        ALITAS[item.flavor];
+
+      if (product) {
+        ids.push(product.id);
+      }
+    }
+
+    if (item.type === "drink") {
+      const product =
+        BEBIDAS[item.drink];
+
+      if (product) {
+        ids.push(product.id);
+      }
+    }
+  }
+
+  return [...new Set(ids)];
+}
+
 /* =========================================================
-   CONEXIÓN CON WHATSAPP
+   GOOGLE SHEETS
+========================================================= */
+
+async function callSheets(
+  action,
+  extra = {}
+) {
+  if (
+    !SHEETS_URL ||
+    !SHEETS_SECRET
+  ) {
+    throw new Error(
+      "Faltan GOOGLE_SHEETS_WEBHOOK_URL o GOOGLE_SHEETS_SECRET"
+    );
+  }
+
+  const response = await fetch(
+    SHEETS_URL,
+    {
+      method: "POST",
+
+      headers: {
+        "Content-Type":
+          "application/json"
+      },
+
+      body: JSON.stringify({
+        secret:
+          SHEETS_SECRET,
+
+        action,
+
+        ...extra
+      })
+    }
+  );
+
+  const responseText =
+    await response.text();
+
+  let data;
+
+  try {
+    data =
+      JSON.parse(responseText);
+  } catch {
+    throw new Error(
+      "Apps Script no devolvió JSON válido: " +
+      responseText.slice(0, 200)
+    );
+  }
+
+  if (!response.ok) {
+    throw new Error(
+      `Apps Script respondió ${response.status}: ` +
+      (
+        data?.error ||
+        responseText
+      )
+    );
+  }
+
+  return data;
+}
+
+/*
+ * Si Sheets falla temporalmente, el menú
+ * sigue funcionando mostrando el catálogo.
+ *
+ * La comprobación definitiva vuelve a
+ * realizarse al confirmar.
+ */
+async function getStockSafe() {
+  try {
+    const result =
+      await callSheets("get_stock");
+
+    if (!result?.ok) {
+      throw new Error(
+        result?.error ||
+        "No se pudo consultar el stock"
+      );
+    }
+
+    return result.products || {};
+  } catch (error) {
+    console.error(
+      "No se pudo consultar el stock:",
+      error.message
+    );
+
+    return null;
+  }
+}
+
+function productIsAvailable(
+  stock,
+  productId
+) {
+  /*
+   * Si Sheets está caído, se muestra
+   * el catálogo y se comprueba al confirmar.
+   */
+  if (!stock) {
+    return true;
+  }
+
+  return (
+    stock[productId]?.available ===
+    true
+  );
+}
+
+async function createOrderInSheets({
+  messageId,
+  phone,
+  customerName,
+  cart
+}) {
+  return callSheets(
+    "create_order",
+    {
+      order: {
+        messageId,
+
+        phone,
+
+        customerName:
+          customerName ||
+          "Cliente WhatsApp",
+
+        /*
+         * Quitamos los asteriscos de
+         * formato antes de guardarlo.
+         */
+        detailText:
+          formatCart(cart, true)
+            .replace(/\*/g, ""),
+
+        total:
+          cartTotal(cart),
+
+        productIds:
+          cartProductIds(cart)
+      }
+    }
+  );
+}
+
+/* =========================================================
+   WHATSAPP CLOUD API
 ========================================================= */
 
 async function sendWhatsApp(payload) {
@@ -360,32 +588,32 @@ async function sendWhatsApp(payload) {
   const phoneNumberId =
     requiredEnv("PHONE_NUMBER_ID");
 
-  const url =
+  const response = await fetch(
     `https://graph.facebook.com/` +
     `${GRAPH_API_VERSION}/` +
-    `${phoneNumberId}/messages`;
+    `${phoneNumberId}/messages`,
+    {
+      method: "POST",
 
-  const response = await fetch(url, {
-    method: "POST",
+      headers: {
+        Authorization:
+          `Bearer ${token}`,
 
-    headers: {
-      Authorization:
-        `Bearer ${token}`,
+        "Content-Type":
+          "application/json"
+      },
 
-      "Content-Type":
-        "application/json"
-    },
+      body: JSON.stringify({
+        messaging_product:
+          "whatsapp",
 
-    body: JSON.stringify({
-      messaging_product:
-        "whatsapp",
+        recipient_type:
+          "individual",
 
-      recipient_type:
-        "individual",
-
-      ...payload
-    })
-  });
+        ...payload
+      })
+    }
+  );
 
   const data = await response
     .json()
@@ -399,10 +627,7 @@ async function sendWhatsApp(payload) {
           status:
             response.status,
 
-          data,
-
-          payloadType:
-            payload.type
+          data
         },
         null,
         2
@@ -411,40 +636,11 @@ async function sendWhatsApp(payload) {
 
     throw new Error(
       data?.error?.message ||
-      `Meta respondió con estado ${response.status}`
+      `Meta respondió ${response.status}`
     );
   }
 
-  console.log(
-    "Mensaje enviado:",
-    JSON.stringify({
-      type:
-        payload.type,
-
-      messageId:
-        data?.messages?.[0]?.id ||
-        null
-    })
-  );
-
   return data;
-}
-
-/* =========================================================
-   TIPOS DE MENSAJES
-========================================================= */
-
-async function sendText(to, body) {
-  return sendWhatsApp({
-    to,
-
-    type: "text",
-
-    text: {
-      body,
-      preview_url: false
-    }
-  });
 }
 
 async function sendButtons(
@@ -514,7 +710,8 @@ async function sendList(
       },
 
       action: {
-        button: buttonText,
+        button:
+          buttonText,
 
         sections: [
           {
@@ -535,53 +732,30 @@ async function sendList(
 ========================================================= */
 
 async function sendWelcomeMenu(to) {
-  const body =
+  return sendButtons(
+    to,
+
     "*¡Hola! Bienvenido a Otra Cosita 🍔.*\n" +
-    "*¿Qué se te antoja hoy?*";
+    "*¿Qué se te antoja hoy?*",
 
-  const buttons = [
-    {
-      id: "START",
-      title: "Hacer Pedido"
-    }
-  ];
-
-  /*
-   * Primero intenta enviar la imagen,
-   * texto y botón en un solo mensaje.
-   */
-  try {
-    return await sendButtons(
-      to,
-      body,
-      buttons,
+    [
       {
-        header: {
-          type: "image",
+        id: "START",
+        title: "Hacer Pedido"
+      }
+    ],
 
-          image: {
-            link:
-              MENU_IMAGE_URL
-          }
+    {
+      header: {
+        type: "image",
+
+        image: {
+          link:
+            MENU_IMAGE_URL
         }
       }
-    );
-  } catch (error) {
-    console.error(
-      "No se pudo enviar el menú con imagen:",
-      error.message
-    );
-
-    /*
-     * Si la imagen falla,
-     * envía igualmente la bienvenida.
-     */
-    return sendButtons(
-      to,
-      body,
-      buttons
-    );
-  }
+    }
+  );
 }
 
 /* =========================================================
@@ -595,15 +769,16 @@ async function sendCategoryMenu(
   const encodedCart =
     encodeCart(cart);
 
-  const cartInfo = cart.length
-    ? (
-      "\n\nCarrito actual: " +
-      `${cart.length} producto(s)` +
-      ` · S/ ${money(
-        cartTotal(cart)
-      )}`
-    )
-    : "";
+  const cartInfo =
+    cart.length
+      ? (
+        "\n\nCarrito: " +
+        `${cart.length} producto(s)` +
+        ` · S/ ${money(
+          cartTotal(cart)
+        )}`
+      )
+      : "";
 
   return sendButtons(
     to,
@@ -643,7 +818,7 @@ async function sendCategoryMenu(
 }
 
 /* =========================================================
-   MAKIS: TAMAÑO
+   MAKIS
 ========================================================= */
 
 async function sendMakiSizeList(
@@ -669,6 +844,7 @@ async function sendMakiSizeList(
         ),
 
         title: "12 cortes",
+
         description:
           "1 sabor · S/ 20.90"
       },
@@ -681,6 +857,7 @@ async function sendMakiSizeList(
         ),
 
         title: "24 cortes",
+
         description:
           "2 sabores · S/ 35.90"
       },
@@ -693,6 +870,7 @@ async function sendMakiSizeList(
         ),
 
         title: "36 cortes",
+
         description:
           "3 sabores · S/ 49.90"
       },
@@ -705,6 +883,7 @@ async function sendMakiSizeList(
         ),
 
         title: "48 cortes",
+
         description:
           "4 sabores · S/ 65.90"
       },
@@ -716,6 +895,7 @@ async function sendMakiSizeList(
         ),
 
         title: "Volver",
+
         description:
           "Regresar a las categorías"
       }
@@ -724,10 +904,6 @@ async function sendMakiSizeList(
     "Tamaños"
   );
 }
-
-/* =========================================================
-   MAKIS: SABORES
-========================================================= */
 
 async function sendMakiFlavorList(
   to,
@@ -746,46 +922,85 @@ async function sendMakiFlavorList(
     );
   }
 
+  const stock =
+    await getStockSafe();
+
+  const availableIndexes =
+    MAKIS
+      .map(
+        (product, index) => ({
+          product,
+          index
+        })
+      )
+      .filter(
+        ({ product }) =>
+          productIsAvailable(
+            stock,
+            product.id
+          )
+      )
+      .map(
+        ({ index }) => index
+      );
+
   const encodedCart =
     encodeCart(cart);
 
+  if (!availableIndexes.length) {
+    return sendButtons(
+      to,
+
+      "😕 En este momento todos los sabores de maki están agotados.",
+
+      [
+        {
+          id: makeAction(
+            "BACK_CATEGORIES",
+            encodedCart
+          ),
+
+          title: "Volver"
+        }
+      ]
+    );
+  }
+
+  /*
+   * Ocho sabores por página:
+   * 8 productos + navegación + volver.
+   */
+  const pageSize = 8;
+
+  const totalPages =
+    Math.ceil(
+      availableIndexes.length /
+      pageSize
+    );
+
+  const safePage =
+    Math.min(
+      Math.max(page, 1),
+      totalPages
+    );
+
+  const indexes =
+    availableIndexes.slice(
+      (safePage - 1) *
+        pageSize,
+
+      safePage *
+        pageSize
+    );
+
   const selectedEncoded =
-    encodeSelectedFlavors(selected);
+    encodeSelectedFlavors(
+      selected
+    );
 
   const remaining =
     size.flavors -
     selected.length;
-
-  const selectedText =
-    selected.length
-      ? (
-        "\nElegidos: " +
-        selected
-          .map(
-            (index) =>
-              MAKIS[index]
-          )
-          .join(", ")
-      )
-      : "";
-
-  /*
-   * La lista se divide en páginas
-   * para no sobrecargar un mensaje.
-   */
-  const firstPageIndexes = [
-    0, 1, 2, 3,
-    4, 5, 6, 7
-  ];
-
-  const secondPageIndexes = [
-    8, 9, 10
-  ];
-
-  const indexes =
-    page === 2
-      ? secondPageIndexes
-      : firstPageIndexes;
 
   const rows =
     indexes.map(
@@ -799,20 +1014,21 @@ async function sendMakiFlavorList(
         ),
 
         title:
-          MAKIS[flavorIndex],
+          MAKIS[flavorIndex].name,
 
         description:
-          `Seleccionar ${MAKIS[flavorIndex]}`
+          "Seleccionar " +
+          MAKIS[flavorIndex].name
       })
     );
 
-  if (page === 1) {
+  if (safePage < totalPages) {
     rows.push({
       id: makeAction(
         "MAKI_PAGE",
         String(cuts),
         selectedEncoded,
-        "2",
+        String(safePage + 1),
         encodedCart
       ),
 
@@ -820,15 +1036,15 @@ async function sendMakiFlavorList(
         "Más sabores",
 
       description:
-        "Nami, Otra Cosita y Kraken"
+        "Ver la siguiente página"
     });
-  } else {
+  } else if (safePage > 1) {
     rows.push({
       id: makeAction(
         "MAKI_PAGE",
         String(cuts),
         selectedEncoded,
-        "1",
+        String(safePage - 1),
         encodedCart
       ),
 
@@ -836,7 +1052,7 @@ async function sendMakiFlavorList(
         "Sabores anteriores",
 
       description:
-        "Volver a la primera página"
+        "Volver a la página anterior"
     });
   }
 
@@ -853,30 +1069,36 @@ async function sendMakiFlavorList(
       "Volver a las categorías"
   });
 
-  let instruction;
-
-  if (remaining === 1) {
-    instruction =
-      "Elige el último sabor.";
-  } else {
-    instruction =
-      `Elige ${remaining} sabores más.`;
-  }
+  const selectedText =
+    selected.length
+      ? (
+        "\nElegidos: " +
+        selected
+          .map(
+            (index) =>
+              MAKIS[index]?.name
+          )
+          .filter(Boolean)
+          .join(", ")
+      )
+      : "";
 
   return sendList(
     to,
 
     `🍣 *${cuts} cortes*\n` +
-    instruction +
+    (
+      remaining === 1
+        ? "Elige el último sabor."
+        : `Elige ${remaining} sabores más.`
+    ) +
     selectedText,
 
     "Ver sabores",
 
     rows,
 
-    page === 2
-      ? "Más sabores"
-      : "Sabores"
+    "Sabores disponibles"
   );
 }
 
@@ -888,25 +1110,61 @@ async function sendWingsFlavorList(
   to,
   cart
 ) {
+  const stock =
+    await getStockSafe();
+
   const encodedCart =
     encodeCart(cart);
 
   const rows =
-    ALITAS.map(
-      (flavor, index) => ({
-        id: makeAction(
-          "WINGS_FLAVOR",
-          String(index),
-          encodedCart
-        ),
+    ALITAS
+      .map(
+        (product, index) => ({
+          product,
+          index
+        })
+      )
+      .filter(
+        ({ product }) =>
+          productIsAvailable(
+            stock,
+            product.id
+          )
+      )
+      .map(
+        ({ product, index }) => ({
+          id: makeAction(
+            "WINGS_FLAVOR",
+            String(index),
+            encodedCart
+          ),
 
-        title:
-          flavor,
+          title:
+            product.name,
 
-        description:
-          "6 unidades por porción · S/ 24.90"
-      })
+          description:
+            "6 unidades por porción · S/ 24.90"
+        })
+      );
+
+  if (!rows.length) {
+    return sendButtons(
+      to,
+
+      "😕 En este momento todas las alitas están agotadas.",
+
+      [
+        {
+          id: makeAction(
+            "BACK_CATEGORIES",
+            encodedCart
+          ),
+
+          title: "Volver"
+        }
+      ]
     );
+  }
 
   rows.push({
     id: makeAction(
@@ -929,7 +1187,7 @@ async function sendWingsFlavorList(
 
     rows,
 
-    "Alitas"
+    "Alitas disponibles"
   );
 }
 
@@ -954,7 +1212,7 @@ async function sendWingsQuantity(
   return sendButtons(
     to,
 
-    `🍗 Elegiste *${flavor}*.\n` +
+    `🍗 Elegiste *${flavor.name}*.\n` +
     "¿Cuántas porciones deseas?\n\n" +
     "Cada porción contiene 6 unidades " +
     "y cuesta S/ 24.90.",
@@ -988,25 +1246,61 @@ async function sendDrinkList(
   to,
   cart
 ) {
+  const stock =
+    await getStockSafe();
+
   const encodedCart =
     encodeCart(cart);
 
   const rows =
-    BEBIDAS.map(
-      (drink, index) => ({
-        id: makeAction(
-          "DRINK_TYPE",
-          String(index),
-          encodedCart
-        ),
+    BEBIDAS
+      .map(
+        (product, index) => ({
+          product,
+          index
+        })
+      )
+      .filter(
+        ({ product }) =>
+          productIsAvailable(
+            stock,
+            product.id
+          )
+      )
+      .map(
+        ({ product, index }) => ({
+          id: makeAction(
+            "DRINK_TYPE",
+            String(index),
+            encodedCart
+          ),
 
-        title:
-          drink,
+          title:
+            product.name,
 
-        description:
-          "S/ 5.00"
-      })
+          description:
+            "S/ 5.00"
+        })
+      );
+
+  if (!rows.length) {
+    return sendButtons(
+      to,
+
+      "😕 En este momento todas las bebidas están agotadas.",
+
+      [
+        {
+          id: makeAction(
+            "BACK_CATEGORIES",
+            encodedCart
+          ),
+
+          title: "Volver"
+        }
+      ]
     );
+  }
 
   rows.push({
     id: makeAction(
@@ -1029,7 +1323,7 @@ async function sendDrinkList(
 
     rows,
 
-    "Bebidas"
+    "Bebidas disponibles"
   );
 }
 
@@ -1054,7 +1348,7 @@ async function sendDrinkQuantity(
   return sendButtons(
     to,
 
-    `🥤 Elegiste *${drink}*.\n` +
+    `🥤 Elegiste *${drink.name}*.\n` +
     "¿Cuántas deseas?",
 
     [1, 2, 3].map(
@@ -1079,7 +1373,7 @@ async function sendDrinkQuantity(
 }
 
 /* =========================================================
-   CARRITO
+   CARRITO Y CONFIRMACIÓN
 ========================================================= */
 
 async function sendCartActions(
@@ -1119,7 +1413,7 @@ async function sendCartActions(
         ),
 
         title:
-          "Hacer pedido"
+          "Ver resumen"
       },
 
       {
@@ -1178,23 +1472,83 @@ async function sendOrderSummary(
 
 async function sendConfirmedOrder(
   to,
-  cart
+  cart,
+  customerName,
+  messageId
 ) {
-  const orderCode =
-    "OC-" +
-    Date.now()
-      .toString()
-      .slice(-6);
+  const result =
+    await createOrderInSheets({
+      messageId,
+      phone: to,
+      customerName,
+      cart
+    });
+
+  /*
+   * Apps Script detectó productos agotados
+   * durante la comprobación final.
+   */
+  if (!result?.ok) {
+    if (
+      result?.error ===
+      "PRODUCTS_UNAVAILABLE"
+    ) {
+      const unavailableText =
+        (
+          result
+            .unavailableProducts ||
+          []
+        )
+          .map(
+            (product) =>
+              `• ${product.name}`
+          )
+          .join("\n");
+
+      return sendButtons(
+        to,
+
+        "⚠️ No se pudo confirmar porque " +
+        "estos productos se agotaron:\n\n" +
+        (
+          unavailableText ||
+          "Uno o más productos"
+        ) +
+        "\n\nRealiza un pedido nuevo con " +
+        "los productos disponibles.",
+
+        [
+          {
+            id:
+              "START",
+
+            title:
+              "Nuevo pedido"
+          }
+        ]
+      );
+    }
+
+    throw new Error(
+      result?.error ||
+      "Google Sheets rechazó el pedido"
+    );
+  }
 
   return sendButtons(
     to,
 
     "✅ *Pedido confirmado*\n\n" +
-    `Código: *${orderCode}*\n` +
+    `Código: *${result.orderId}*\n` +
     `Total: *S/ ${money(
       cartTotal(cart)
-    )}*\n\n` +
-    "El flujo del pedido quedó completado.",
+    )}*\n` +
+    `Estado: *${
+      result.status ||
+      "En preparación"
+    }*\n\n` +
+    "Tu pedido ya apareció en la " +
+    "pantalla de cocina.",
 
     [
       {
@@ -1258,12 +1612,13 @@ async function addItemOrFinish(
 }
 
 /* =========================================================
-   PROCESAR ACCIONES
+   ENRUTAMIENTO
 ========================================================= */
 
 async function routeMessage(
   to,
-  message
+  message,
+  customerName
 ) {
   const actionId =
     message
@@ -1279,8 +1634,7 @@ async function routeMessage(
     "";
 
   /*
-   * Cualquier texto, imagen, audio o sticker
-   * vuelve a mostrar la bienvenida.
+   * Cualquier texto o archivo inicia el menú.
    */
   if (!actionId) {
     return sendWelcomeMenu(to);
@@ -1293,18 +1647,12 @@ async function routeMessage(
     parts[0];
 
   switch (action) {
-    /*
-     * Inicio
-     */
     case "START":
       return sendCategoryMenu(
         to,
         []
       );
 
-    /*
-     * Categorías
-     */
     case "CAT_MAKIS":
       return sendMakiSizeList(
         to,
@@ -1330,55 +1678,26 @@ async function routeMessage(
         decodeCart(parts[1])
       );
 
-    /*
-     * Tamaño de makis
-     */
-    case "MAKI_SIZE": {
-      const cuts =
-        Number(parts[1]);
-
-      const cart =
-        decodeCart(parts[2]);
-
+    case "MAKI_SIZE":
       return sendMakiFlavorList(
         to,
-        cart,
-        cuts,
+        decodeCart(parts[2]),
+        Number(parts[1]),
         [],
         1
       );
-    }
 
-    /*
-     * Cambiar página de sabores
-     */
-    case "MAKI_PAGE": {
-      const cuts =
-        Number(parts[1]);
-
-      const selected =
-        parseSelectedFlavors(
-          parts[2]
-        );
-
-      const page =
-        Number(parts[3]);
-
-      const cart =
-        decodeCart(parts[4]);
-
+    case "MAKI_PAGE":
       return sendMakiFlavorList(
         to,
-        cart,
-        cuts,
-        selected,
-        page
+        decodeCart(parts[4]),
+        Number(parts[1]),
+        parseSelectedFlavors(
+          parts[2]
+        ),
+        Number(parts[3])
       );
-    }
 
-    /*
-     * Seleccionar sabor de maki
-     */
     case "MAKI_FLAVOR": {
       const cuts =
         Number(parts[1]);
@@ -1407,14 +1726,45 @@ async function routeMessage(
         );
       }
 
+      /*
+       * Comprobación de stock al tocar
+       * la opción.
+       */
+      const stock =
+        await getStockSafe();
+
+      if (
+        !productIsAvailable(
+          stock,
+          MAKIS[flavorIndex].id
+        )
+      ) {
+        return sendButtons(
+          to,
+
+          `⚠️ ${
+            MAKIS[flavorIndex].name
+          } acaba de agotarse.`,
+
+          [
+            {
+              id: makeAction(
+                "CAT_MAKIS",
+                encodeCart(cart)
+              ),
+
+              title:
+                "Elegir otro"
+            }
+          ]
+        );
+      }
+
       const updatedSelected = [
         ...selected,
         flavorIndex
       ];
 
-      /*
-       * Todavía faltan sabores.
-       */
       if (
         updatedSelected.length <
         size.flavors
@@ -1428,11 +1778,9 @@ async function routeMessage(
         );
       }
 
-      /*
-       * Todos los sabores fueron elegidos.
-       */
       const item = {
-        type: "maki",
+        type:
+          "maki",
 
         cuts,
 
@@ -1447,7 +1795,7 @@ async function routeMessage(
         item.flavors
           .map(
             (index) =>
-              MAKIS[index]
+              MAKIS[index].name
           )
           .join(" + ");
 
@@ -1464,26 +1812,13 @@ async function routeMessage(
       );
     }
 
-    /*
-     * Seleccionar sabor de alitas
-     */
-    case "WINGS_FLAVOR": {
-      const flavorIndex =
-        Number(parts[1]);
-
-      const cart =
-        decodeCart(parts[2]);
-
+    case "WINGS_FLAVOR":
       return sendWingsQuantity(
         to,
-        cart,
-        flavorIndex
+        decodeCart(parts[2]),
+        Number(parts[1])
       );
-    }
 
-    /*
-     * Seleccionar cantidad de alitas
-     */
     case "WINGS_QTY": {
       const flavorIndex =
         Number(parts[1]);
@@ -1507,8 +1842,12 @@ async function routeMessage(
       }
 
       const item = {
-        type: "wings",
-        flavor: flavorIndex,
+        type:
+          "wings",
+
+        flavor:
+          flavorIndex,
+
         portions
       };
 
@@ -1518,7 +1857,7 @@ async function routeMessage(
         item,
 
         `🍗 ${portions} porción(es) ` +
-        `de ${ALITAS[flavorIndex]}\n` +
+        `de ${ALITAS[flavorIndex].name}\n` +
         `${portions * 6} unidades\n` +
         `S/ ${money(
           portions *
@@ -1527,26 +1866,13 @@ async function routeMessage(
       );
     }
 
-    /*
-     * Seleccionar bebida
-     */
-    case "DRINK_TYPE": {
-      const drinkIndex =
-        Number(parts[1]);
-
-      const cart =
-        decodeCart(parts[2]);
-
+    case "DRINK_TYPE":
       return sendDrinkQuantity(
         to,
-        cart,
-        drinkIndex
+        decodeCart(parts[2]),
+        Number(parts[1])
       );
-    }
 
-    /*
-     * Seleccionar cantidad de bebida
-     */
     case "DRINK_QTY": {
       const drinkIndex =
         Number(parts[1]);
@@ -1570,8 +1896,12 @@ async function routeMessage(
       }
 
       const item = {
-        type: "drink",
-        drink: drinkIndex,
+        type:
+          "drink",
+
+        drink:
+          drinkIndex,
+
         quantity
       };
 
@@ -1581,7 +1911,7 @@ async function routeMessage(
         item,
 
         `🥤 ${quantity} × ` +
-        `${BEBIDAS[drinkIndex]}\n` +
+        `${BEBIDAS[drinkIndex].name}\n` +
         `S/ ${money(
           quantity *
           DRINK_PRICE
@@ -1589,39 +1919,44 @@ async function routeMessage(
       );
     }
 
-    /*
-     * Ver resumen
-     */
     case "CART_SUMMARY":
       return sendOrderSummary(
         to,
         decodeCart(parts[1])
       );
 
-    /*
-     * Confirmar
-     */
     case "CART_CONFIRM":
       return sendConfirmedOrder(
         to,
-        decodeCart(parts[1])
+        decodeCart(parts[1]),
+
+        /*
+         * Nombre visible del perfil
+         * de WhatsApp.
+         */
+        customerName,
+
+        /*
+         * Identificador único del clic
+         * en Confirmar pedido.
+         */
+        message.id
       );
 
-    /*
-     * Cancelar
-     */
     case "CART_CANCEL":
       return sendCancelledOrder(
         to
       );
 
     default:
-      return sendWelcomeMenu(to);
+      return sendWelcomeMenu(
+        to
+      );
   }
 }
 
 /* =========================================================
-   WEBHOOK
+   WEBHOOK DE META
 ========================================================= */
 
 export default async function handler(
@@ -1629,7 +1964,7 @@ export default async function handler(
   res
 ) {
   /*
-   * Meta verifica el webhook mediante GET.
+   * Verificación del webhook.
    */
   if (req.method === "GET") {
     const mode =
@@ -1663,7 +1998,7 @@ export default async function handler(
   }
 
   /*
-   * Meta entrega mensajes mediante POST.
+   * Mensajes entrantes.
    */
   if (req.method === "POST") {
     try {
@@ -1671,21 +2006,37 @@ export default async function handler(
         req.body?.entry || [];
 
       for (
-        const entry of entries
+        const entry
+        of entries
       ) {
         const changes =
           entry?.changes || [];
 
         for (
-          const change of changes
+          const change
+          of changes
         ) {
+          const value =
+            change?.value || {};
+
+          /*
+           * Meta incluye el nombre visible
+           * del usuario en contacts.
+           */
+          const customerName =
+            value
+              ?.contacts
+              ?.[0]
+              ?.profile
+              ?.name ||
+            "Cliente WhatsApp";
+
           const messages =
-            change
-              ?.value
-              ?.messages || [];
+            value?.messages || [];
 
           for (
-            const message of messages
+            const message
+            of messages
           ) {
             const from =
               message?.from;
@@ -1700,18 +2051,10 @@ export default async function handler(
               continue;
             }
 
-            /*
-             * Ignorar reintentos duplicados.
-             */
             if (
               processedMessageIds
                 .has(messageId)
             ) {
-              console.log(
-                "Mensaje duplicado ignorado:",
-                messageId
-              );
-
               continue;
             }
 
@@ -1726,35 +2069,10 @@ export default async function handler(
             processedMessageIds
               .add(messageId);
 
-            console.log(
-              "Mensaje recibido:",
-              JSON.stringify({
-                from,
-
-                type:
-                  message?.type ||
-                  null,
-
-                messageId,
-
-                action:
-                  message
-                    ?.interactive
-                    ?.button_reply
-                    ?.id ||
-
-                  message
-                    ?.interactive
-                    ?.list_reply
-                    ?.id ||
-
-                  null
-              })
-            );
-
             await routeMessage(
               from,
-              message
+              message,
+              customerName
             );
           }
         }
@@ -1774,10 +2092,6 @@ export default async function handler(
         error
       );
 
-      /*
-       * Se devuelve 200 para evitar que Meta
-       * repita indefinidamente el webhook.
-       */
       return res
         .status(200)
         .json({
