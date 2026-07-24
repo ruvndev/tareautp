@@ -1,7 +1,17 @@
-const GRAPH_API_VERSION = process.env.GRAPH_API_VERSION || "v25.0";
+const GRAPH_API_VERSION =
+  process.env.GRAPH_API_VERSION || "v25.0";
+
+const PUBLIC_BASE_URL = (
+  process.env.PUBLIC_BASE_URL ||
+  "https://tareautp.vercel.app"
+).replace(/\/+$/, "");
+
+const MENU_IMAGE_URL =
+  process.env.MENU_IMAGE_URL ||
+  `${PUBLIC_BASE_URL}/menu.jpg`;
 
 function requiredEnv(name) {
-  const value = process.env[name]?.trim();
+  const value = process.env[name];
 
   if (!value) {
     throw new Error(`Falta la variable de entorno ${name}`);
@@ -10,48 +20,69 @@ function requiredEnv(name) {
   return value;
 }
 
-function getMenuImageUrl() {
-  const baseUrl = requiredEnv("PUBLIC_BASE_URL").replace(/\/+$/, "");
-  return `${baseUrl}/menu.jpg`;
-}
-
 async function sendWhatsApp(payload) {
   const token = requiredEnv("WHATSAPP_TOKEN");
   const phoneNumberId = requiredEnv("PHONE_NUMBER_ID");
 
-  const response = await fetch(
-    `https://graph.facebook.com/${GRAPH_API_VERSION}/${phoneNumberId}/messages`,
-    {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${token}`,
-        "Content-Type": "application/json"
-      },
-      body: JSON.stringify({
-        messaging_product: "whatsapp",
-        recipient_type: "individual",
-        ...payload
-      })
-    }
-  );
+  const url =
+    `https://graph.facebook.com/` +
+    `${GRAPH_API_VERSION}/${phoneNumberId}/messages`;
+
+  const response = await fetch(url, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${token}`,
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify({
+      messaging_product: "whatsapp",
+      recipient_type: "individual",
+      ...payload
+    })
+  });
 
   const data = await response.json().catch(() => ({}));
 
   if (!response.ok) {
-    console.error("Meta rechazó el mensaje:", {
-      status: response.status,
-      error: data?.error || data
-    });
+    console.error(
+      "Error de Meta:",
+      JSON.stringify(
+        {
+          status: response.status,
+          data,
+          payloadType: payload.type
+        },
+        null,
+        2
+      )
+    );
 
     throw new Error(
-      data?.error?.error_user_msg ||
       data?.error?.message ||
-      `Meta respondió con HTTP ${response.status}`
+      `Meta respondió con estado ${response.status}`
     );
   }
 
-  console.log("Mensaje enviado correctamente:", data);
+  console.log(
+    "Mensaje enviado correctamente:",
+    JSON.stringify({
+      type: payload.type,
+      messageId: data?.messages?.[0]?.id
+    })
+  );
+
   return data;
+}
+
+async function sendText(to, text) {
+  return sendWhatsApp({
+    to,
+    type: "text",
+    text: {
+      body: text,
+      preview_url: false
+    }
+  });
 }
 
 async function sendMenuImage(to) {
@@ -59,7 +90,7 @@ async function sendMenuImage(to) {
     to,
     type: "image",
     image: {
-      link: getMenuImageUrl(),
+      link: MENU_IMAGE_URL,
       caption:
         "*¡Hola! Bienvenido a Otra Cosita 🍔.*\n" +
         "¿Qué se te antoja hoy?"
@@ -74,7 +105,7 @@ async function sendOrderButton(to) {
     interactive: {
       type: "button",
       body: {
-        text: "Pulsa el botón para comenzar tu pedido 👇"
+        text: "Presiona el botón para comenzar tu pedido 👇"
       },
       action: {
         buttons: [
@@ -91,12 +122,6 @@ async function sendOrderButton(to) {
   });
 }
 
-async function sendWelcomeFlow(to) {
-  // Primero envía la imagen y después el botón.
-  await sendMenuImage(to);
-  await sendOrderButton(to);
-}
-
 async function sendOrderPrompt(to) {
   return sendWhatsApp({
     to,
@@ -105,8 +130,7 @@ async function sendOrderPrompt(to) {
       type: "button",
       body: {
         text:
-          "🍔 *¡Perfecto!*\n\n" +
-          "Escríbenos tu pedido en un solo mensaje.\n\n" +
+          "🍔 Envíanos tu pedido en un solo mensaje.\n\n" +
           "Ejemplo:\n" +
           "2 hamburguesas clásicas\n" +
           "1 salchipapa\n" +
@@ -127,46 +151,53 @@ async function sendOrderPrompt(to) {
   });
 }
 
+async function sendWelcomeMenu(to) {
+  try {
+    await sendMenuImage(to);
+  } catch (error) {
+    console.error(
+      "No se pudo enviar la imagen del menú:",
+      error.message
+    );
+
+    // El bot seguirá respondiendo aunque Meta rechace la imagen.
+    await sendText(
+      to,
+      "*¡Hola! Bienvenido a Otra Cosita 🍔.*\n" +
+      "¿Qué se te antoja hoy?\n\n" +
+      `Puedes ver el menú aquí:\n${MENU_IMAGE_URL}`
+    );
+  }
+
+  return sendOrderButton(to);
+}
+
 async function routeMessage(to, message) {
-  const action =
-    message?.interactive?.button_reply?.id ||
-    message?.interactive?.list_reply?.id ||
-    null;
+  const buttonId =
+    message?.interactive?.button_reply?.id;
+
+  const listId =
+    message?.interactive?.list_reply?.id;
+
+  const action = buttonId || listId;
 
   if (action === "HACER_PEDIDO") {
-    await sendOrderPrompt(to);
-    return;
+    return sendOrderPrompt(to);
   }
 
   if (action === "VOLVER_MENU") {
-    await sendWelcomeFlow(to);
-    return;
+    return sendWelcomeMenu(to);
   }
 
-  // Cualquier mensaje normal, imagen, audio, sticker, etc.
-  await sendWelcomeFlow(to);
-}
-
-function extractMessages(body) {
-  const messages = [];
-
-  for (const entry of body?.entry || []) {
-    for (const change of entry?.changes || []) {
-      const value = change?.value;
-
-      for (const message of value?.messages || []) {
-        if (message?.from) {
-          messages.push(message);
-        }
-      }
-    }
-  }
-
-  return messages;
+  // Cualquier texto, imagen, audio, sticker u otro mensaje
+  // hace que el bot muestre nuevamente el menú.
+  return sendWelcomeMenu(to);
 }
 
 export default async function handler(req, res) {
-  // Meta usa GET para verificar el webhook.
+  /*
+   * Meta usa GET para verificar el webhook.
+   */
   if (req.method === "GET") {
     const mode = req.query["hub.mode"];
     const token = req.query["hub.verify_token"];
@@ -179,41 +210,71 @@ export default async function handler(req, res) {
       return res.status(200).send(challenge);
     }
 
-    return res.status(403).send("Token de verificación incorrecto");
+    return res
+      .status(403)
+      .send("Token de verificación incorrecto");
   }
 
-  // Meta usa POST para enviar mensajes y estados.
+  /*
+   * Meta usa POST para entregar mensajes y estados.
+   */
   if (req.method === "POST") {
     try {
-      const messages = extractMessages(req.body);
+      const entries = req.body?.entry || [];
 
-      // Los eventos de entrega y lectura no traen mensajes.
-      if (messages.length === 0) {
-        return res.status(200).json({
-          received: true,
-          type: "status_or_other_event"
-        });
-      }
+      for (const entry of entries) {
+        const changes = entry?.changes || [];
 
-      for (const message of messages) {
-        await routeMessage(message.from, message);
+        for (const change of changes) {
+          const value = change?.value;
+          const messages = value?.messages || [];
+
+          for (const message of messages) {
+            const from = message?.from;
+
+            if (!from) {
+              continue;
+            }
+
+            console.log(
+              "Mensaje recibido:",
+              JSON.stringify({
+                from,
+                type: message.type,
+                messageId: message.id,
+                text: message?.text?.body || null,
+                button:
+                  message?.interactive?.button_reply?.id ||
+                  null
+              })
+            );
+
+            await routeMessage(from, message);
+          }
+        }
       }
 
       return res.status(200).json({
-        received: true,
-        processed: messages.length
+        received: true
       });
     } catch (error) {
-      console.error("Error procesando webhook:", error);
+      console.error(
+        "Error procesando webhook:",
+        error?.stack || error?.message || error
+      );
 
+      // Se devuelve 200 para impedir reintentos continuos de Meta.
       return res.status(200).json({
         received: true,
         bot_error: true,
-        message: error.message
+        error: error.message
       });
     }
   }
 
   res.setHeader("Allow", "GET, POST");
-  return res.status(405).send("Método no permitido");
+
+  return res
+    .status(405)
+    .send("Método no permitido");
 }
