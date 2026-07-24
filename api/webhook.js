@@ -1,6 +1,6 @@
 const GRAPH_API_VERSION = process.env.GRAPH_API_VERSION || "v25.0";
 const MENU_IMAGE_URL =
-  process.env.MENU_IMAGE_URL || "https://tareautp.vercel.app/menu.png";
+  process.env.MENU_IMAGE_URL || "https://tareautp.vercel.app/menu.jpg";
 
 const MAKIS = {
   sizes: {
