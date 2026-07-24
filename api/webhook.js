@@ -1,906 +1,1807 @@
-const GRAPH_API_VERSION = process.env.GRAPH_API_VERSION || "v25.0";
+const GRAPH_API_VERSION =
+  process.env.GRAPH_API_VERSION || "v25.0";
+
 const MENU_IMAGE_URL =
-  process.env.MENU_IMAGE_URL || "https://tareautp.vercel.app/menu.jpg";
+  process.env.MENU_IMAGE_URL ||
+  "https://tareautp.vercel.app/menu.jpg";
 
-const MAKIS = {
-  sizes: {
-    12: { price: 20.9, flavors: 1 },
-    24: { price: 35.9, flavors: 2 },
-    36: { price: 49.9, flavors: 3 },
-    48: { price: 65.9, flavors: 4 }
+/* =========================================================
+   CATÁLOGO
+========================================================= */
+
+const MAKIS = [
+  "Acevichado",
+  "Acevichado Classic",
+  "Nikumaki",
+  "Korean BBQ",
+  "Umimaki",
+  "Sakura",
+  "Furai",
+  "Midori",
+  "Nami",
+  "Otra Cosita",
+  "Kraken"
+];
+
+const ALITAS = [
+  "Acevichadas",
+  "Panko Wings",
+  "Korean BBQ",
+  "Orientales",
+  "Sakura",
+  "Buffalo"
+];
+
+const BEBIDAS = [
+  "Inca Cola",
+  "Coca Cola",
+  "Chicha Morada"
+];
+
+const MAKI_SIZES = {
+  12: {
+    price: 20.90,
+    flavors: 1
   },
-  flavors: [
-    { id: "ACEVICHADO", name: "Acevichado" },
-    { id: "ACEV_CLASSIC", name: "Acevichado Classic" },
-    { id: "NIKUMAKI", name: "Nikumaki" },
-    { id: "KOREAN_BBQ", name: "Korean BBQ" },
-    { id: "UMIMAKI", name: "Umimaki" },
-    { id: "SAKURA", name: "Sakura" },
-    { id: "FURAI", name: "Furai" },
-    { id: "MIDORI", name: "Midori" },
-    { id: "NAMI", name: "Nami" },
-    { id: "OTRA_COSITA", name: "Otra Cosita" },
-    { id: "KRAKEN", name: "Kraken" }
-  ]
+  24: {
+    price: 35.90,
+    flavors: 2
+  },
+  36: {
+    price: 49.90,
+    flavors: 3
+  },
+  48: {
+    price: 65.90,
+    flavors: 4
+  }
 };
 
-const WINGS = {
-  pricePerPortion: 24.9,
-  unitsPerPortion: 6,
-  flavors: [
-    { id: "ACEVICHADAS", name: "Acevichadas" },
-    { id: "PANKO", name: "Panko Wings" },
-    { id: "KOREAN_BBQ", name: "Korean BBQ" },
-    { id: "ORIENTALES", name: "Orientales" },
-    { id: "SAKURA", name: "Sakura" },
-    { id: "BUFFALO", name: "Buffalo" }
-  ]
-};
+const WINGS_PRICE = 24.90;
+const DRINK_PRICE = 5.00;
 
-const DRINKS = {
-  INKA_COLA: { name: "Inka Cola", price: 5 },
-  COCA_COLA: { name: "Coca Cola", price: 5 },
-  CHICHA_MORADA: { name: "Chicha Morada", price: 5 }
-};
+/*
+ * Como todavía no usamos una base de datos,
+ * se limita el carrito para que los IDs de WhatsApp
+ * no sean demasiado largos.
+ */
+const MAX_CART_ITEMS = 8;
+
+/*
+ * Evita responder dos veces al mismo webhook
+ * cuando Meta reintenta un mensaje.
+ *
+ * Es solo una protección temporal dentro de cada
+ * instancia activa de Vercel.
+ */
+const processedMessageIds =
+  globalThis.__otraCositaProcessedMessages || new Set();
+
+globalThis.__otraCositaProcessedMessages =
+  processedMessageIds;
+
+/* =========================================================
+   UTILIDADES
+========================================================= */
 
 function requiredEnv(name) {
   const value = process.env[name];
-  if (!value) throw new Error(`Falta la variable de entorno ${name}`);
+
+  if (!value) {
+    throw new Error(
+      `Falta la variable de entorno ${name}`
+    );
+  }
+
   return value;
 }
 
 function money(value) {
-  return Number(value || 0).toFixed(2);
+  return Number(value).toFixed(2);
 }
 
-function freshSession(phone) {
-  return {
-    phone,
-    state: "IDLE",
-    cart: [],
-    pending: null,
-    customer: {
-      name: "",
-      modality: "",
-      address: "",
-      payment: ""
-    },
-    updatedAt: new Date().toISOString()
-  };
+/*
+ * Crea los IDs internos que viajan dentro
+ * de botones y opciones de listas.
+ */
+function makeAction(...parts) {
+  const id = parts.join("|");
+
+  if (id.length > 190) {
+    throw new Error(
+      "El carrito es demasiado grande para continuar sin una base de datos."
+    );
+  }
+
+  return id;
 }
 
-function calculateTotal(cart = []) {
-  return cart.reduce((sum, item) => sum + Number(item.subtotal || 0), 0);
+/* =========================================================
+   CODIFICAR Y DECODIFICAR CARRITO
+========================================================= */
+
+/*
+ * Ejemplos:
+ *
+ * m24-0,6  = 24 makis, sabores 0 y 6
+ * a5-2     = alitas Buffalo, 2 porciones
+ * b1-3     = Coca Cola, 3 unidades
+ */
+function encodeCart(cart) {
+  if (!cart.length) {
+    return "-";
+  }
+
+  return cart
+    .map((item) => {
+      if (item.type === "maki") {
+        return (
+          `m${item.cuts}-` +
+          item.flavors.join(",")
+        );
+      }
+
+      if (item.type === "wings") {
+        return (
+          `a${item.flavor}-` +
+          item.portions
+        );
+      }
+
+      if (item.type === "drink") {
+        return (
+          `b${item.drink}-` +
+          item.quantity
+        );
+      }
+
+      throw new Error(
+        "Producto de carrito desconocido"
+      );
+    })
+    .join(".");
 }
 
-function extractAction(message) {
-  return (
-    message?.interactive?.button_reply?.id ||
-    message?.interactive?.list_reply?.id ||
-    ""
-  );
+function decodeCart(encoded) {
+  if (!encoded || encoded === "-") {
+    return [];
+  }
+
+  return encoded
+    .split(".")
+    .map((token) => {
+      let match;
+
+      /*
+       * Makis
+       */
+      match = token.match(
+        /^m(12|24|36|48)-([0-9,]+)$/
+      );
+
+      if (match) {
+        return {
+          type: "maki",
+          cuts: Number(match[1]),
+          flavors: match[2]
+            .split(",")
+            .map(Number)
+        };
+      }
+
+      /*
+       * Alitas
+       */
+      match = token.match(
+        /^a(\d+)-(\d+)$/
+      );
+
+      if (match) {
+        return {
+          type: "wings",
+          flavor: Number(match[1]),
+          portions: Number(match[2])
+        };
+      }
+
+      /*
+       * Bebidas
+       */
+      match = token.match(
+        /^b(\d+)-(\d+)$/
+      );
+
+      if (match) {
+        return {
+          type: "drink",
+          drink: Number(match[1]),
+          quantity: Number(match[2])
+        };
+      }
+
+      return null;
+    })
+    .filter(Boolean);
 }
 
-function extractText(message) {
-  return message?.text?.body?.trim() || "";
+function parseSelectedFlavors(value) {
+  if (!value || value === "-") {
+    return [];
+  }
+
+  return value
+    .split(",")
+    .map(Number)
+    .filter(Number.isInteger);
 }
 
-async function sendWhatsApp(payload) {
-  const token = requiredEnv("WHATSAPP_TOKEN");
-  const phoneNumberId = requiredEnv("PHONE_NUMBER_ID");
+function encodeSelectedFlavors(values) {
+  return values.length
+    ? values.join(",")
+    : "-";
+}
 
-  const response = await fetch(
-    `https://graph.facebook.com/${GRAPH_API_VERSION}/${phoneNumberId}/messages`,
-    {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${token}`,
-        "Content-Type": "application/json"
-      },
-      body: JSON.stringify({
-        messaging_product: "whatsapp",
-        recipient_type: "individual",
-        ...payload
-      })
+/* =========================================================
+   CÁLCULOS DEL CARRITO
+========================================================= */
+
+function cartTotal(cart) {
+  return cart.reduce((total, item) => {
+    if (item.type === "maki") {
+      return (
+        total +
+        MAKI_SIZES[item.cuts].price
+      );
+    }
+
+    if (item.type === "wings") {
+      return (
+        total +
+        item.portions * WINGS_PRICE
+      );
+    }
+
+    if (item.type === "drink") {
+      return (
+        total +
+        item.quantity * DRINK_PRICE
+      );
+    }
+
+    return total;
+  }, 0);
+}
+
+function formatCart(cart, includeTotal = true) {
+  if (!cart.length) {
+    return "Tu carrito está vacío.";
+  }
+
+  const lines = cart.map(
+    (item, index) => {
+      /*
+       * Makis
+       */
+      if (item.type === "maki") {
+        const flavors = item.flavors
+          .map(
+            (flavorIndex) =>
+              MAKIS[flavorIndex]
+          )
+          .filter(Boolean)
+          .join(" + ");
+
+        return (
+          `${index + 1}. 🍣 ` +
+          `*${item.cuts} cortes de maki*\n` +
+          `   ${flavors}\n` +
+          `   S/ ${money(
+            MAKI_SIZES[item.cuts].price
+          )}`
+        );
+      }
+
+      /*
+       * Alitas
+       */
+      if (item.type === "wings") {
+        const units =
+          item.portions * 6;
+
+        const subtotal =
+          item.portions *
+          WINGS_PRICE;
+
+        return (
+          `${index + 1}. 🍗 ` +
+          `*Alitas ${ALITAS[item.flavor]}*\n` +
+          `   ${item.portions} porción(es)` +
+          ` · ${units} unidades\n` +
+          `   S/ ${money(subtotal)}`
+        );
+      }
+
+      /*
+       * Bebidas
+       */
+      const subtotal =
+        item.quantity *
+        DRINK_PRICE;
+
+      return (
+        `${index + 1}. 🥤 ` +
+        `*${BEBIDAS[item.drink]}*\n` +
+        `   ${item.quantity} unidad(es)\n` +
+        `   S/ ${money(subtotal)}`
+      );
     }
   );
 
-  const data = await response.json().catch(() => ({}));
+  if (includeTotal) {
+    lines.push(
+      "━━━━━━━━━━━━━━\n" +
+      `*TOTAL: S/ ${money(
+        cartTotal(cart)
+      )}*`
+    );
+  }
+
+  return lines.join("\n\n");
+}
+
+/* =========================================================
+   CONEXIÓN CON WHATSAPP
+========================================================= */
+
+async function sendWhatsApp(payload) {
+  const token =
+    requiredEnv("WHATSAPP_TOKEN");
+
+  const phoneNumberId =
+    requiredEnv("PHONE_NUMBER_ID");
+
+  const url =
+    `https://graph.facebook.com/` +
+    `${GRAPH_API_VERSION}/` +
+    `${phoneNumberId}/messages`;
+
+  const response = await fetch(url, {
+    method: "POST",
+
+    headers: {
+      Authorization:
+        `Bearer ${token}`,
+
+      "Content-Type":
+        "application/json"
+    },
+
+    body: JSON.stringify({
+      messaging_product:
+        "whatsapp",
+
+      recipient_type:
+        "individual",
+
+      ...payload
+    })
+  });
+
+  const data = await response
+    .json()
+    .catch(() => ({}));
 
   if (!response.ok) {
     console.error(
       "Error de Meta:",
-      JSON.stringify({ status: response.status, data, payloadType: payload.type })
+      JSON.stringify(
+        {
+          status:
+            response.status,
+
+          data,
+
+          payloadType:
+            payload.type
+        },
+        null,
+        2
+      )
     );
-    throw new Error(data?.error?.message || `Meta respondió ${response.status}`);
+
+    throw new Error(
+      data?.error?.message ||
+      `Meta respondió con estado ${response.status}`
+    );
   }
 
   console.log(
     "Mensaje enviado:",
     JSON.stringify({
-      type: payload.type,
-      messageId: data?.messages?.[0]?.id || null
+      type:
+        payload.type,
+
+      messageId:
+        data?.messages?.[0]?.id ||
+        null
     })
   );
 
   return data;
 }
 
+/* =========================================================
+   TIPOS DE MENSAJES
+========================================================= */
+
 async function sendText(to, body) {
   return sendWhatsApp({
     to,
+
     type: "text",
-    text: { body, preview_url: false }
+
+    text: {
+      body,
+      preview_url: false
+    }
   });
 }
 
-async function sendButtons(to, body, buttons, footer) {
+async function sendButtons(
+  to,
+  body,
+  buttons,
+  options = {}
+) {
   const interactive = {
     type: "button",
-    body: { text: body },
+
+    body: {
+      text: body
+    },
+
     action: {
-      buttons: buttons.slice(0, 3).map((button) => ({
-        type: "reply",
-        reply: {
-          id: button.id,
-          title: button.title
-        }
-      }))
+      buttons: buttons
+        .slice(0, 3)
+        .map((button) => ({
+          type: "reply",
+
+          reply: {
+            id: button.id,
+            title: button.title
+          }
+        }))
     }
   };
 
-  if (footer) interactive.footer = { text: footer };
+  if (options.header) {
+    interactive.header =
+      options.header;
+  }
+
+  if (options.footer) {
+    interactive.footer = {
+      text: options.footer
+    };
+  }
 
   return sendWhatsApp({
     to,
+
     type: "interactive",
+
     interactive
   });
 }
 
-async function sendList(to, body, buttonText, rows, sectionTitle = "Opciones") {
+async function sendList(
+  to,
+  body,
+  buttonText,
+  rows,
+  sectionTitle = "Opciones"
+) {
   return sendWhatsApp({
     to,
+
     type: "interactive",
+
     interactive: {
       type: "list",
-      body: { text: body },
+
+      body: {
+        text: body
+      },
+
       action: {
         button: buttonText,
+
         sections: [
           {
-            title: sectionTitle,
-            rows: rows.slice(0, 10)
+            title:
+              sectionTitle,
+
+            rows:
+              rows.slice(0, 10)
           }
         ]
       }
     }
   });
 }
+
+/* =========================================================
+   BIENVENIDA
+========================================================= */
 
 async function sendWelcomeMenu(to) {
-  return sendWhatsApp({
-    to,
-    type: "interactive",
-    interactive: {
-      type: "button",
-      header: {
-        type: "image",
-        image: { link: MENU_IMAGE_URL }
-      },
-      body: {
-        text: "*¡Hola! Bienvenido a Otra Cosita 🍔.*\n*¿Qué se te antoja hoy?*"
-      },
-      action: {
-        buttons: [
-          {
-            type: "reply",
-            reply: { id: "HACER_PEDIDO", title: "Hacer Pedido" }
-          }
-        ]
-      }
+  const body =
+    "*¡Hola! Bienvenido a Otra Cosita 🍔.*\n" +
+    "*¿Qué se te antoja hoy?*";
+
+  const buttons = [
+    {
+      id: "START",
+      title: "Hacer Pedido"
     }
-  });
+  ];
+
+  /*
+   * Primero intenta enviar la imagen,
+   * texto y botón en un solo mensaje.
+   */
+  try {
+    return await sendButtons(
+      to,
+      body,
+      buttons,
+      {
+        header: {
+          type: "image",
+
+          image: {
+            link:
+              MENU_IMAGE_URL
+          }
+        }
+      }
+    );
+  } catch (error) {
+    console.error(
+      "No se pudo enviar el menú con imagen:",
+      error.message
+    );
+
+    /*
+     * Si la imagen falla,
+     * envía igualmente la bienvenida.
+     */
+    return sendButtons(
+      to,
+      body,
+      buttons
+    );
+  }
 }
 
-async function sendCategories(to) {
+/* =========================================================
+   CATEGORÍAS
+========================================================= */
+
+async function sendCategoryMenu(
+  to,
+  cart
+) {
+  const encodedCart =
+    encodeCart(cart);
+
+  const cartInfo = cart.length
+    ? (
+      "\n\nCarrito actual: " +
+      `${cart.length} producto(s)` +
+      ` · S/ ${money(
+        cartTotal(cart)
+      )}`
+    )
+    : "";
+
   return sendButtons(
     to,
-    "🍽️ *¿Qué deseas agregar a tu pedido?*",
+
+    "🍽️ *¿Qué deseas agregar?*" +
+    cartInfo,
+
     [
-      { id: "CAT_MAKIS", title: "Makis" },
-      { id: "CAT_ALITAS", title: "Alitas" },
-      { id: "CAT_BEBIDAS", title: "Bebidas" }
+      {
+        id: makeAction(
+          "CAT_MAKIS",
+          encodedCart
+        ),
+
+        title: "Makis"
+      },
+
+      {
+        id: makeAction(
+          "CAT_ALITAS",
+          encodedCart
+        ),
+
+        title: "Alitas"
+      },
+
+      {
+        id: makeAction(
+          "CAT_BEBIDAS",
+          encodedCart
+        ),
+
+        title: "Bebidas"
+      }
     ]
   );
 }
 
-async function sendMakiSizes(to) {
+/* =========================================================
+   MAKIS: TAMAÑO
+========================================================= */
+
+async function sendMakiSizeList(
+  to,
+  cart
+) {
+  const encodedCart =
+    encodeCart(cart);
+
   return sendList(
     to,
+
     "🍣 *Selecciona el tamaño de tus makis:*",
+
     "Elegir tamaño",
+
     [
       {
-        id: "MAKI_SIZE_12",
-        title: "12 cortes — S/ 20.90",
-        description: "Escoge 1 sabor"
+        id: makeAction(
+          "MAKI_SIZE",
+          "12",
+          encodedCart
+        ),
+
+        title: "12 cortes",
+        description:
+          "1 sabor · S/ 20.90"
       },
+
       {
-        id: "MAKI_SIZE_24",
-        title: "24 cortes — S/ 35.90",
-        description: "Escoge 2 sabores"
+        id: makeAction(
+          "MAKI_SIZE",
+          "24",
+          encodedCart
+        ),
+
+        title: "24 cortes",
+        description:
+          "2 sabores · S/ 35.90"
       },
+
       {
-        id: "MAKI_SIZE_36",
-        title: "36 cortes — S/ 49.90",
-        description: "Escoge 3 sabores"
+        id: makeAction(
+          "MAKI_SIZE",
+          "36",
+          encodedCart
+        ),
+
+        title: "36 cortes",
+        description:
+          "3 sabores · S/ 49.90"
       },
+
       {
-        id: "MAKI_SIZE_48",
-        title: "48 cortes — S/ 65.90",
-        description: "Escoge 4 sabores"
+        id: makeAction(
+          "MAKI_SIZE",
+          "48",
+          encodedCart
+        ),
+
+        title: "48 cortes",
+        description:
+          "4 sabores · S/ 65.90"
       },
+
       {
-        id: "VOLVER_CATEGORIAS",
+        id: makeAction(
+          "BACK_CATEGORIES",
+          encodedCart
+        ),
+
         title: "Volver",
-        description: "Regresar a las categorías"
+        description:
+          "Regresar a las categorías"
       }
     ],
+
     "Tamaños"
   );
 }
 
-function selectedFlavorText(session) {
-  const selected = session?.pending?.flavors || [];
-  if (!selected.length) return "Todavía no elegiste sabores.";
-  return `Elegidos: ${selected.join(", ")}`;
-}
+/* =========================================================
+   MAKIS: SABORES
+========================================================= */
 
-async function sendMakiFlavors(to, session, page = 1) {
-  const selected = session?.pending?.flavors || [];
-  const required = session?.pending?.requiredFlavors || 1;
-  const remaining = required - selected.length;
+async function sendMakiFlavorList(
+  to,
+  cart,
+  cuts,
+  selected = [],
+  page = 1
+) {
+  const size =
+    MAKI_SIZES[cuts];
 
-  const pageOne = MAKIS.flavors.slice(0, 8).map((flavor) => ({
-    id: `MAKI_FLAVOR_${flavor.id}`,
-    title: flavor.name,
-    description: "Agregar este sabor"
-  }));
+  if (!size) {
+    return sendMakiSizeList(
+      to,
+      cart
+    );
+  }
 
-  const pageTwo = MAKIS.flavors.slice(8).map((flavor) => ({
-    id: `MAKI_FLAVOR_${flavor.id}`,
-    title: flavor.name,
-    description: "Agregar este sabor"
-  }));
+  const encodedCart =
+    encodeCart(cart);
+
+  const selectedEncoded =
+    encodeSelectedFlavors(selected);
+
+  const remaining =
+    size.flavors -
+    selected.length;
+
+  const selectedText =
+    selected.length
+      ? (
+        "\nElegidos: " +
+        selected
+          .map(
+            (index) =>
+              MAKIS[index]
+          )
+          .join(", ")
+      )
+      : "";
+
+  /*
+   * La lista se divide en páginas
+   * para no sobrecargar un mensaje.
+   */
+  const firstPageIndexes = [
+    0, 1, 2, 3,
+    4, 5, 6, 7
+  ];
+
+  const secondPageIndexes = [
+    8, 9, 10
+  ];
+
+  const indexes =
+    page === 2
+      ? secondPageIndexes
+      : firstPageIndexes;
+
+  const rows =
+    indexes.map(
+      (flavorIndex) => ({
+        id: makeAction(
+          "MAKI_FLAVOR",
+          String(cuts),
+          selectedEncoded,
+          String(flavorIndex),
+          encodedCart
+        ),
+
+        title:
+          MAKIS[flavorIndex],
+
+        description:
+          `Seleccionar ${MAKIS[flavorIndex]}`
+      })
+    );
 
   if (page === 1) {
-    pageOne.push({
-      id: "MAKI_FLAVORS_PAGE_2",
-      title: "Ver más sabores",
-      description: "Nami, Otra Cosita y Kraken"
+    rows.push({
+      id: makeAction(
+        "MAKI_PAGE",
+        String(cuts),
+        selectedEncoded,
+        "2",
+        encodedCart
+      ),
+
+      title:
+        "Más sabores",
+
+      description:
+        "Nami, Otra Cosita y Kraken"
     });
   } else {
-    pageTwo.push({
-      id: "MAKI_FLAVORS_PAGE_1",
-      title: "Volver a sabores",
-      description: "Regresar a la primera lista"
-    });
-  }
-
-  return sendList(
-    to,
-    `🍣 *Escoge un sabor.*\nTe ${remaining === 1 ? "falta" : "faltan"} ${remaining}.\n${selectedFlavorText(
-      session
-    )}`,
-    "Ver sabores",
-    page === 1 ? pageOne : pageTwo,
-    page === 1 ? "Sabores 1 de 2" : "Sabores 2 de 2"
-  );
-}
-
-async function sendWingFlavors(to) {
-  return sendList(
-    to,
-    "🍗 *Selecciona el sabor de tus alitas:*\nCada porción trae 6 unidades y cuesta S/ 24.90.",
-    "Ver sabores",
-    [
-      ...WINGS.flavors.map((flavor) => ({
-        id: `WING_FLAVOR_${flavor.id}`,
-        title: flavor.name,
-        description: "6 unidades por porción"
-      })),
-      {
-        id: "VOLVER_CATEGORIAS",
-        title: "Volver",
-        description: "Regresar a las categorías"
-      }
-    ],
-    "Sabores de alitas"
-  );
-}
-
-async function sendQuantityList(to, prefix, title, description) {
-  const rows = [];
-  for (let quantity = 1; quantity <= 6; quantity += 1) {
     rows.push({
-      id: `${prefix}_${quantity}`,
-      title: `${quantity} ${quantity === 1 ? "unidad" : "unidades"}`,
-      description
+      id: makeAction(
+        "MAKI_PAGE",
+        String(cuts),
+        selectedEncoded,
+        "1",
+        encodedCart
+      ),
+
+      title:
+        "Sabores anteriores",
+
+      description:
+        "Volver a la primera página"
     });
   }
+
   rows.push({
-    id: "VOLVER_CATEGORIAS",
+    id: makeAction(
+      "BACK_CATEGORIES",
+      encodedCart
+    ),
+
+    title:
+      "Cancelar selección",
+
+    description:
+      "Volver a las categorías"
+  });
+
+  let instruction;
+
+  if (remaining === 1) {
+    instruction =
+      "Elige el último sabor.";
+  } else {
+    instruction =
+      `Elige ${remaining} sabores más.`;
+  }
+
+  return sendList(
+    to,
+
+    `🍣 *${cuts} cortes*\n` +
+    instruction +
+    selectedText,
+
+    "Ver sabores",
+
+    rows,
+
+    page === 2
+      ? "Más sabores"
+      : "Sabores"
+  );
+}
+
+/* =========================================================
+   ALITAS
+========================================================= */
+
+async function sendWingsFlavorList(
+  to,
+  cart
+) {
+  const encodedCart =
+    encodeCart(cart);
+
+  const rows =
+    ALITAS.map(
+      (flavor, index) => ({
+        id: makeAction(
+          "WINGS_FLAVOR",
+          String(index),
+          encodedCart
+        ),
+
+        title:
+          flavor,
+
+        description:
+          "6 unidades por porción · S/ 24.90"
+      })
+    );
+
+  rows.push({
+    id: makeAction(
+      "BACK_CATEGORIES",
+      encodedCart
+    ),
+
     title: "Volver",
-    description: "Regresar a las categorías"
+
+    description:
+      "Regresar a las categorías"
   });
 
-  return sendList(to, title, "Elegir cantidad", rows, "Cantidad");
-}
-
-async function sendDrinkOptions(to) {
-  return sendButtons(
+  return sendList(
     to,
-    "🥤 *Selecciona una bebida:*\nTodas cuestan S/ 5.00.",
-    [
-      { id: "DRINK_INKA_COLA", title: "Inka Cola" },
-      { id: "DRINK_COCA_COLA", title: "Coca Cola" },
-      { id: "DRINK_CHICHA_MORADA", title: "Chicha Morada" }
-    ]
+
+    "🍗 *Selecciona el sabor de tus alitas:*",
+
+    "Ver sabores",
+
+    rows,
+
+    "Alitas"
   );
 }
 
-function itemSummary(item) {
-  if (item.kind === "makis") {
-    return `• Makis ${item.cuts} cortes (${item.flavors.join(", ")}) — S/ ${money(
-      item.subtotal
-    )}`;
+async function sendWingsQuantity(
+  to,
+  cart,
+  flavorIndex
+) {
+  const encodedCart =
+    encodeCart(cart);
+
+  const flavor =
+    ALITAS[flavorIndex];
+
+  if (!flavor) {
+    return sendWingsFlavorList(
+      to,
+      cart
+    );
   }
 
-  if (item.kind === "alitas") {
-    return `• ${item.portions} ${item.portions === 1 ? "porción" : "porciones"} de alitas ${
-      item.flavor
-    } (${item.units} unidades) — S/ ${money(item.subtotal)}`;
-  }
-
-  if (item.kind === "bebida") {
-    return `• ${item.quantity} × ${item.name} — S/ ${money(item.subtotal)}`;
-  }
-
-  return "• Producto";
-}
-
-function cartSummary(cart = []) {
-  if (!cart.length) return "Tu carrito está vacío.";
-  const lines = cart.map(itemSummary);
-  lines.push(`\n*Subtotal: S/ ${money(calculateTotal(cart))}*`);
-  return lines.join("\n");
-}
-
-async function sendCartActions(to, session, addedText) {
   return sendButtons(
     to,
-    `✅ *${addedText}*\n\n${cartSummary(session.cart)}\n\n¿Qué deseas hacer ahora?`,
-    [
-      { id: "AGREGAR_MAS", title: "Agregar más" },
-      { id: "FINALIZAR_PEDIDO", title: "Finalizar" },
-      { id: "CANCELAR_PEDIDO", title: "Cancelar" }
-    ]
+
+    `🍗 Elegiste *${flavor}*.\n` +
+    "¿Cuántas porciones deseas?\n\n" +
+    "Cada porción contiene 6 unidades " +
+    "y cuesta S/ 24.90.",
+
+    [1, 2, 3].map(
+      (quantity) => ({
+        id: makeAction(
+          "WINGS_QTY",
+          String(flavorIndex),
+          String(quantity),
+          encodedCart
+        ),
+
+        title:
+          `${quantity} ` +
+          (
+            quantity === 1
+              ? "porción"
+              : "porciones"
+          )
+      })
+    )
   );
 }
 
-async function sendModality(to) {
-  return sendButtons(
-    to,
-    "🛵 *¿Cómo deseas recibir tu pedido?*",
-    [
-      { id: "MOD_DELIVERY", title: "Delivery" },
-      { id: "MOD_RECOJO", title: "Recojo" },
-      { id: "CANCELAR_PEDIDO", title: "Cancelar" }
-    ]
-  );
-}
+/* =========================================================
+   BEBIDAS
+========================================================= */
 
-async function sendPaymentMethods(to) {
-  return sendButtons(
-    to,
-    "💳 *Selecciona tu método de pago:*",
-    [
-      { id: "PAY_YAPE", title: "Yape" },
-      { id: "PAY_EFECTIVO", title: "Efectivo" },
-      { id: "PAY_TARJETA", title: "Tarjeta" }
-    ]
-  );
-}
+async function sendDrinkList(
+  to,
+  cart
+) {
+  const encodedCart =
+    encodeCart(cart);
 
-function finalSummary(session) {
-  const customer = session.customer || {};
-  const locationLine =
-    customer.modality === "Delivery"
-      ? `Dirección: ${customer.address}`
-      : "Entrega: Recojo en tienda";
+  const rows =
+    BEBIDAS.map(
+      (drink, index) => ({
+        id: makeAction(
+          "DRINK_TYPE",
+          String(index),
+          encodedCart
+        ),
 
-  return (
-    `🧾 *Resumen:*\n\n` +
-    `${cartSummary(session.cart)}\n\n` +
-    `Modalidad: ${customer.modality}\n` +
-    `Nombre: ${customer.name}\n` +
-    `${locationLine}\n` +
-    `Pago: ${customer.payment}\n\n` +
-    `*Total: S/ ${money(calculateTotal(session.cart))}*\n\n` +
-    "¿Confirmas tu pedido?"
-  );
-}
+        title:
+          drink,
 
-async function sendConfirmation(to, session) {
-  return sendButtons(
-    to,
-    finalSummary(session),
-    [
-      { id: "CONFIRMAR_PEDIDO", title: "Confirmar pedido" },
-      { id: "CANCELAR_PEDIDO", title: "Cancelar pedido" }
-    ],
-    "Revisa todos los datos antes de confirmar"
-  );
-}
+        description:
+          "S/ 5.00"
+      })
+    );
 
-async function sendCancelled(to) {
-  return sendButtons(
-    to,
-    "❌ *Pedido cancelado.*\nNo se registró ninguna orden.",
-    [{ id: "NUEVO_PEDIDO", title: "Nuevo pedido" }]
-  );
-}
+  rows.push({
+    id: makeAction(
+      "BACK_CATEGORIES",
+      encodedCart
+    ),
 
-async function sheetsApi(action, payload = {}) {
-  const url = requiredEnv("SHEETS_API_URL");
-  const secret = requiredEnv("SHEETS_API_SECRET");
+    title: "Volver",
 
-  const response = await fetch(url, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ secret, action, ...payload })
+    description:
+      "Regresar a las categorías"
   });
 
-  const raw = await response.text();
-  let data;
+  return sendList(
+    to,
 
-  try {
-    data = JSON.parse(raw);
-  } catch {
-    throw new Error(`Sheets devolvió una respuesta inválida: ${raw.slice(0, 180)}`);
+    "🥤 *Selecciona una bebida:*",
+
+    "Ver bebidas",
+
+    rows,
+
+    "Bebidas"
+  );
+}
+
+async function sendDrinkQuantity(
+  to,
+  cart,
+  drinkIndex
+) {
+  const encodedCart =
+    encodeCart(cart);
+
+  const drink =
+    BEBIDAS[drinkIndex];
+
+  if (!drink) {
+    return sendDrinkList(
+      to,
+      cart
+    );
   }
 
-  if (!data.ok) {
-    throw new Error(data.error || "Error desconocido en Google Sheets");
+  return sendButtons(
+    to,
+
+    `🥤 Elegiste *${drink}*.\n` +
+    "¿Cuántas deseas?",
+
+    [1, 2, 3].map(
+      (quantity) => ({
+        id: makeAction(
+          "DRINK_QTY",
+          String(drinkIndex),
+          String(quantity),
+          encodedCart
+        ),
+
+        title:
+          `${quantity} ` +
+          (
+            quantity === 1
+              ? "unidad"
+              : "unidades"
+          )
+      })
+    )
+  );
+}
+
+/* =========================================================
+   CARRITO
+========================================================= */
+
+async function sendCartActions(
+  to,
+  cart,
+  addedText
+) {
+  const encodedCart =
+    encodeCart(cart);
+
+  return sendButtons(
+    to,
+
+    "✅ *Agregado al pedido*\n\n" +
+    addedText +
+    "\n\nTotal actual: " +
+    `*S/ ${money(
+      cartTotal(cart)
+    )}*\n\n` +
+    "¿Qué deseas hacer?",
+
+    [
+      {
+        id: makeAction(
+          "CART_MORE",
+          encodedCart
+        ),
+
+        title:
+          "Agregar más"
+      },
+
+      {
+        id: makeAction(
+          "CART_SUMMARY",
+          encodedCart
+        ),
+
+        title:
+          "Ver resumen"
+      },
+
+      {
+        id:
+          "CART_CANCEL",
+
+        title:
+          "Cancelar"
+      }
+    ]
+  );
+}
+
+async function sendOrderSummary(
+  to,
+  cart
+) {
+  if (!cart.length) {
+    return sendCategoryMenu(
+      to,
+      []
+    );
   }
 
-  return data;
+  const encodedCart =
+    encodeCart(cart);
+
+  return sendButtons(
+    to,
+
+    "🧾 *RESUMEN DE TU PEDIDO*\n\n" +
+    formatCart(cart, true) +
+    "\n\n¿Confirmas tu pedido?",
+
+    [
+      {
+        id: makeAction(
+          "CART_CONFIRM",
+          encodedCart
+        ),
+
+        title:
+          "Confirmar pedido"
+      },
+
+      {
+        id:
+          "CART_CANCEL",
+
+        title:
+          "Cancelar pedido"
+      }
+    ]
+  );
 }
 
-async function getSession(phone) {
-  const result = await sheetsApi("get_session", { phone });
-  return result.session || freshSession(phone);
+async function sendConfirmedOrder(
+  to,
+  cart
+) {
+  const orderCode =
+    "OC-" +
+    Date.now()
+      .toString()
+      .slice(-6);
+
+  return sendButtons(
+    to,
+
+    "✅ *Pedido confirmado*\n\n" +
+    `Código: *${orderCode}*\n` +
+    `Total: *S/ ${money(
+      cartTotal(cart)
+    )}*\n\n` +
+    "El flujo del pedido quedó completado. " +
+    "Después conectaremos esta confirmación " +
+    "con Google Sheets.",
+
+    [
+      {
+        id:
+          "START",
+
+        title:
+          "Nuevo pedido"
+      }
+    ]
+  );
 }
 
-async function saveSession(session) {
-  session.updatedAt = new Date().toISOString();
-  await sheetsApi("save_session", { session });
+async function sendCancelledOrder(
+  to
+) {
+  return sendButtons(
+    to,
+
+    "❌ *Pedido cancelado.*\n\n" +
+    "El carrito fue descartado.",
+
+    [
+      {
+        id:
+          "START",
+
+        title:
+          "Volver al menú"
+      }
+    ]
+  );
 }
 
-async function deleteSession(phone) {
-  await sheetsApi("delete_session", { phone });
+async function addItemOrFinish(
+  to,
+  cart,
+  item,
+  addedText
+) {
+  if (
+    cart.length >=
+    MAX_CART_ITEMS
+  ) {
+    return sendOrderSummary(
+      to,
+      cart
+    );
+  }
+
+  const updatedCart = [
+    ...cart,
+    item
+  ];
+
+  return sendCartActions(
+    to,
+    updatedCart,
+    addedText
+  );
 }
 
-async function claimMessage(messageId) {
-  const result = await sheetsApi("claim_message", { messageId });
-  return Boolean(result.claimed);
-}
+/* =========================================================
+   PROCESAR ACCIONES
+========================================================= */
 
-async function createOrder(session, messageId) {
-  const order = {
-    confirmationMessageId: messageId,
-    phone: session.phone,
-    customerName: session.customer.name,
-    modality: session.customer.modality,
-    address: session.customer.address || "",
-    payment: session.customer.payment,
-    items: session.cart,
-    total: calculateTotal(session.cart),
-    status: "Nuevo"
-  };
+async function routeMessage(
+  to,
+  message
+) {
+  const actionId =
+    message
+      ?.interactive
+      ?.button_reply
+      ?.id ||
 
-  const result = await sheetsApi("create_order", { order });
-  return result.orderId;
-}
+    message
+      ?.interactive
+      ?.list_reply
+      ?.id ||
 
-function findMakiFlavor(id) {
-  return MAKIS.flavors.find((flavor) => flavor.id === id);
-}
+    "";
 
-function findWingFlavor(id) {
-  return WINGS.flavors.find((flavor) => flavor.id === id);
-}
+  /*
+   * Cualquier texto, imagen, audio o sticker
+   * vuelve a mostrar la bienvenida.
+   */
+  if (!actionId) {
+    return sendWelcomeMenu(to);
+  }
 
-async function resendCurrentStep(to, session) {
-  switch (session.state) {
-    case "CATEGORY":
-      return sendCategories(to);
-    case "MAKI_SIZE":
-      return sendMakiSizes(to);
-    case "MAKI_FLAVOR":
-      return sendMakiFlavors(to, session, 1);
-    case "WING_FLAVOR":
-      return sendWingFlavors(to);
-    case "WING_QTY":
-      return sendQuantityList(
+  const parts =
+    actionId.split("|");
+
+  const action =
+    parts[0];
+
+  switch (action) {
+    /*
+     * Inicio
+     */
+    case "START":
+      return sendCategoryMenu(
         to,
-        "WING_QTY",
-        `🍗 ¿Cuántas porciones de *${session.pending?.flavor || "alitas"}* deseas?`,
-        "Cada porción contiene 6 unidades"
+        []
       );
-    case "DRINK":
-      return sendDrinkOptions(to);
-    case "DRINK_QTY":
-      return sendQuantityList(
+
+    /*
+     * Categorías
+     */
+    case "CAT_MAKIS":
+      return sendMakiSizeList(
         to,
-        "DRINK_QTY",
-        `🥤 ¿Cuántas unidades de *${session.pending?.name || "la bebida"}* deseas?`,
-        "S/ 5.00 por unidad"
+        decodeCart(parts[1])
       );
-    case "CART":
-      return sendCartActions(to, session, "Carrito actual");
-    case "MODALITY":
-      return sendModality(to);
-    case "ASK_NAME":
-      return sendText(to, "👤 Escribe el nombre de la persona que recibirá el pedido:");
-    case "ASK_ADDRESS":
-      return sendText(to, "📍 Escribe tu dirección completa y una referencia:");
-    case "PAYMENT":
-      return sendPaymentMethods(to);
-    case "CONFIRM":
-      return sendConfirmation(to, session);
+
+    case "CAT_ALITAS":
+      return sendWingsFlavorList(
+        to,
+        decodeCart(parts[1])
+      );
+
+    case "CAT_BEBIDAS":
+      return sendDrinkList(
+        to,
+        decodeCart(parts[1])
+      );
+
+    case "BACK_CATEGORIES":
+    case "CART_MORE":
+      return sendCategoryMenu(
+        to,
+        decodeCart(parts[1])
+      );
+
+    /*
+     * Tamaño de makis
+     */
+    case "MAKI_SIZE": {
+      const cuts =
+        Number(parts[1]);
+
+      const cart =
+        decodeCart(parts[2]);
+
+      return sendMakiFlavorList(
+        to,
+        cart,
+        cuts,
+        [],
+        1
+      );
+    }
+
+    /*
+     * Cambiar página de sabores
+     */
+    case "MAKI_PAGE": {
+      const cuts =
+        Number(parts[1]);
+
+      const selected =
+        parseSelectedFlavors(
+          parts[2]
+        );
+
+      const page =
+        Number(parts[3]);
+
+      const cart =
+        decodeCart(parts[4]);
+
+      return sendMakiFlavorList(
+        to,
+        cart,
+        cuts,
+        selected,
+        page
+      );
+    }
+
+    /*
+     * Seleccionar sabor de maki
+     */
+    case "MAKI_FLAVOR": {
+      const cuts =
+        Number(parts[1]);
+
+      const selected =
+        parseSelectedFlavors(
+          parts[2]
+        );
+
+      const flavorIndex =
+        Number(parts[3]);
+
+      const cart =
+        decodeCart(parts[4]);
+
+      const size =
+        MAKI_SIZES[cuts];
+
+      if (
+        !size ||
+        !MAKIS[flavorIndex]
+      ) {
+        return sendMakiSizeList(
+          to,
+          cart
+        );
+      }
+
+      const updatedSelected = [
+        ...selected,
+        flavorIndex
+      ];
+
+      /*
+       * Todavía faltan sabores.
+       */
+      if (
+        updatedSelected.length <
+        size.flavors
+      ) {
+        return sendMakiFlavorList(
+          to,
+          cart,
+          cuts,
+          updatedSelected,
+          1
+        );
+      }
+
+      /*
+       * Todos los sabores fueron elegidos.
+       */
+      const item = {
+        type: "maki",
+
+        cuts,
+
+        flavors:
+          updatedSelected.slice(
+            0,
+            size.flavors
+          )
+      };
+
+      const flavorText =
+        item.flavors
+          .map(
+            (index) =>
+              MAKIS[index]
+          )
+          .join(" + ");
+
+      return addItemOrFinish(
+        to,
+        cart,
+        item,
+
+        `🍣 ${cuts} cortes\n` +
+        `${flavorText}\n` +
+        `S/ ${money(
+          size.price
+        )}`
+      );
+    }
+
+    /*
+     * Seleccionar sabor de alitas
+     */
+    case "WINGS_FLAVOR": {
+      const flavorIndex =
+        Number(parts[1]);
+
+      const cart =
+        decodeCart(parts[2]);
+
+      return sendWingsQuantity(
+        to,
+        cart,
+        flavorIndex
+      );
+    }
+
+    /*
+     * Seleccionar cantidad de alitas
+     */
+    case "WINGS_QTY": {
+      const flavorIndex =
+        Number(parts[1]);
+
+      const portions =
+        Number(parts[2]);
+
+      const cart =
+        decodeCart(parts[3]);
+
+      if (
+        !ALITAS[flavorIndex] ||
+        ![1, 2, 3].includes(
+          portions
+        )
+      ) {
+        return sendWingsFlavorList(
+          to,
+          cart
+        );
+      }
+
+      const item = {
+        type: "wings",
+        flavor: flavorIndex,
+        portions
+      };
+
+      return addItemOrFinish(
+        to,
+        cart,
+        item,
+
+        `🍗 ${portions} porción(es) ` +
+        `de ${ALITAS[flavorIndex]}\n` +
+        `${portions * 6} unidades\n` +
+        `S/ ${money(
+          portions *
+          WINGS_PRICE
+        )}`
+      );
+    }
+
+    /*
+     * Seleccionar bebida
+     */
+    case "DRINK_TYPE": {
+      const drinkIndex =
+        Number(parts[1]);
+
+      const cart =
+        decodeCart(parts[2]);
+
+      return sendDrinkQuantity(
+        to,
+        cart,
+        drinkIndex
+      );
+    }
+
+    /*
+     * Seleccionar cantidad de bebida
+     */
+    case "DRINK_QTY": {
+      const drinkIndex =
+        Number(parts[1]);
+
+      const quantity =
+        Number(parts[2]);
+
+      const cart =
+        decodeCart(parts[3]);
+
+      if (
+        !BEBIDAS[drinkIndex] ||
+        ![1, 2, 3].includes(
+          quantity
+        )
+      ) {
+        return sendDrinkList(
+          to,
+          cart
+        );
+      }
+
+      const item = {
+        type: "drink",
+        drink: drinkIndex,
+        quantity
+      };
+
+      return addItemOrFinish(
+        to,
+        cart,
+        item,
+
+        `🥤 ${quantity} × ` +
+        `${BEBIDAS[drinkIndex]}\n` +
+        `S/ ${money(
+          quantity *
+          DRINK_PRICE
+        )}`
+      );
+    }
+
+    /*
+     * Ver resumen
+     */
+    case "CART_SUMMARY":
+      return sendOrderSummary(
+        to,
+        decodeCart(parts[1])
+      );
+
+    /*
+     * Confirmar
+     */
+    case "CART_CONFIRM":
+      return sendConfirmedOrder(
+        to,
+        decodeCart(parts[1])
+      );
+
+    /*
+     * Cancelar
+     */
+    case "CART_CANCEL":
+      return sendCancelledOrder(
+        to
+      );
+
     default:
       return sendWelcomeMenu(to);
   }
 }
 
-async function routeMessage(to, message) {
-  const action = extractAction(message);
-  const text = extractText(message);
-  const normalizedText = text.toLowerCase();
-  let session = await getSession(to);
+/* =========================================================
+   WEBHOOK
+========================================================= */
 
-  if (["cancelar", "cancel", "anular"].includes(normalizedText)) {
-    await deleteSession(to);
-    return sendCancelled(to);
-  }
-
-  if (["menu", "menú", "inicio"].includes(normalizedText)) {
-    await deleteSession(to);
-    return sendWelcomeMenu(to);
-  }
-
-  if (action === "HACER_PEDIDO" || action === "NUEVO_PEDIDO") {
-    session = freshSession(to);
-    session.state = "CATEGORY";
-    await saveSession(session);
-    return sendCategories(to);
-  }
-
-  if (action === "CANCELAR_PEDIDO") {
-    await deleteSession(to);
-    return sendCancelled(to);
-  }
-
-  if (action === "VOLVER_CATEGORIAS" || action === "AGREGAR_MAS") {
-    session.state = "CATEGORY";
-    session.pending = null;
-    await saveSession(session);
-    return sendCategories(to);
-  }
-
-  if (action === "CAT_MAKIS") {
-    session.state = "MAKI_SIZE";
-    session.pending = null;
-    await saveSession(session);
-    return sendMakiSizes(to);
-  }
-
-  if (action.startsWith("MAKI_SIZE_")) {
-    const cuts = Number(action.replace("MAKI_SIZE_", ""));
-    const size = MAKIS.sizes[cuts];
-
-    if (!size) return sendMakiSizes(to);
-
-    session.state = "MAKI_FLAVOR";
-    session.pending = {
-      kind: "makis",
-      cuts,
-      price: size.price,
-      requiredFlavors: size.flavors,
-      flavors: []
-    };
-    await saveSession(session);
-    return sendMakiFlavors(to, session, 1);
-  }
-
-  if (action === "MAKI_FLAVORS_PAGE_1") {
-    return sendMakiFlavors(to, session, 1);
-  }
-
-  if (action === "MAKI_FLAVORS_PAGE_2") {
-    return sendMakiFlavors(to, session, 2);
-  }
-
-  if (action.startsWith("MAKI_FLAVOR_")) {
-    const flavorId = action.replace("MAKI_FLAVOR_", "");
-    const flavor = findMakiFlavor(flavorId);
-
-    if (!flavor || session.state !== "MAKI_FLAVOR" || !session.pending) {
-      return sendMakiSizes(to);
-    }
-
-    session.pending.flavors.push(flavor.name);
-
-    if (session.pending.flavors.length < session.pending.requiredFlavors) {
-      await saveSession(session);
-      return sendMakiFlavors(to, session, 1);
-    }
-
-    session.cart.push({
-      kind: "makis",
-      cuts: session.pending.cuts,
-      flavors: session.pending.flavors,
-      quantity: 1,
-      subtotal: session.pending.price
-    });
-    session.pending = null;
-    session.state = "CART";
-    await saveSession(session);
-    return sendCartActions(to, session, "Makis agregados");
-  }
-
-  if (action === "CAT_ALITAS") {
-    session.state = "WING_FLAVOR";
-    session.pending = null;
-    await saveSession(session);
-    return sendWingFlavors(to);
-  }
-
-  if (action.startsWith("WING_FLAVOR_")) {
-    const flavorId = action.replace("WING_FLAVOR_", "");
-    const flavor = findWingFlavor(flavorId);
-
-    if (!flavor) return sendWingFlavors(to);
-
-    session.pending = {
-      kind: "alitas",
-      flavor: flavor.name
-    };
-    session.state = "WING_QTY";
-    await saveSession(session);
-    return sendQuantityList(
-      to,
-      "WING_QTY",
-      `🍗 ¿Cuántas porciones de *${flavor.name}* deseas?`,
-      "Cada porción contiene 6 unidades"
-    );
-  }
-
-  if (action.startsWith("WING_QTY_")) {
-    const portions = Number(action.replace("WING_QTY_", ""));
-
-    if (!Number.isInteger(portions) || portions < 1 || portions > 6 || !session.pending) {
-      return resendCurrentStep(to, session);
-    }
-
-    session.cart.push({
-      kind: "alitas",
-      flavor: session.pending.flavor,
-      portions,
-      units: portions * WINGS.unitsPerPortion,
-      subtotal: portions * WINGS.pricePerPortion
-    });
-    session.pending = null;
-    session.state = "CART";
-    await saveSession(session);
-    return sendCartActions(to, session, "Alitas agregadas");
-  }
-
-  if (action === "CAT_BEBIDAS") {
-    session.state = "DRINK";
-    session.pending = null;
-    await saveSession(session);
-    return sendDrinkOptions(to);
-  }
-
-  if (action.startsWith("DRINK_") && !action.startsWith("DRINK_QTY_")) {
-    const drinkId = action.replace("DRINK_", "");
-    const drink = DRINKS[drinkId];
-
-    if (!drink) return sendDrinkOptions(to);
-
-    session.pending = {
-      kind: "bebida",
-      id: drinkId,
-      name: drink.name,
-      price: drink.price
-    };
-    session.state = "DRINK_QTY";
-    await saveSession(session);
-    return sendQuantityList(
-      to,
-      "DRINK_QTY",
-      `🥤 ¿Cuántas unidades de *${drink.name}* deseas?`,
-      "S/ 5.00 por unidad"
-    );
-  }
-
-  if (action.startsWith("DRINK_QTY_")) {
-    const quantity = Number(action.replace("DRINK_QTY_", ""));
-
-    if (!Number.isInteger(quantity) || quantity < 1 || quantity > 6 || !session.pending) {
-      return resendCurrentStep(to, session);
-    }
-
-    session.cart.push({
-      kind: "bebida",
-      name: session.pending.name,
-      quantity,
-      subtotal: quantity * session.pending.price
-    });
-    session.pending = null;
-    session.state = "CART";
-    await saveSession(session);
-    return sendCartActions(to, session, "Bebida agregada");
-  }
-
-  if (action === "FINALIZAR_PEDIDO") {
-    if (!session.cart?.length) {
-      session.state = "CATEGORY";
-      await saveSession(session);
-      await sendText(to, "Tu carrito está vacío. Agrega al menos un producto.");
-      return sendCategories(to);
-    }
-
-    session.state = "MODALITY";
-    await saveSession(session);
-    return sendModality(to);
-  }
-
-  if (action === "MOD_DELIVERY" || action === "MOD_RECOJO") {
-    session.customer.modality = action === "MOD_DELIVERY" ? "Delivery" : "Recojo";
-    session.state = "ASK_NAME";
-    await saveSession(session);
-    return sendText(to, "👤 Escribe el nombre de la persona que recibirá el pedido:");
-  }
-
-  if (session.state === "ASK_NAME") {
-    if (!text || text.length < 2 || text.length > 80) {
-      return sendText(to, "Escribe un nombre válido de entre 2 y 80 caracteres:");
-    }
-
-    session.customer.name = text;
-
-    if (session.customer.modality === "Delivery") {
-      session.state = "ASK_ADDRESS";
-      await saveSession(session);
-      return sendText(to, "📍 Escribe tu dirección completa y una referencia:");
-    }
-
-    session.customer.address = "";
-    session.state = "PAYMENT";
-    await saveSession(session);
-    return sendPaymentMethods(to);
-  }
-
-  if (session.state === "ASK_ADDRESS") {
-    if (!text || text.length < 5 || text.length > 220) {
-      return sendText(to, "Escribe una dirección válida y una referencia:");
-    }
-
-    session.customer.address = text;
-    session.state = "PAYMENT";
-    await saveSession(session);
-    return sendPaymentMethods(to);
-  }
-
-  if (["PAY_YAPE", "PAY_EFECTIVO", "PAY_TARJETA"].includes(action)) {
-    const payments = {
-      PAY_YAPE: "Yape",
-      PAY_EFECTIVO: "Efectivo",
-      PAY_TARJETA: "Tarjeta"
-    };
-
-    session.customer.payment = payments[action];
-    session.state = "CONFIRM";
-    await saveSession(session);
-    return sendConfirmation(to, session);
-  }
-
-  if (action === "CONFIRMAR_PEDIDO") {
-    if (session.state !== "CONFIRM" || !session.cart?.length) {
-      return sendWelcomeMenu(to);
-    }
-
-    const orderId = await createOrder(session, message.id);
-    const total = calculateTotal(session.cart);
-    await deleteSession(to);
-
-    return sendText(
-      to,
-      `✅ *Pedido confirmado*\n\nCódigo: *${orderId}*\nTotal: *S/ ${money(
-        total
-      )}*\n\nTu pedido fue registrado y ya aparece en Google Sheets.`
-    );
-  }
-
-  if (session.state !== "IDLE") {
-    return resendCurrentStep(to, session);
-  }
-
-  return sendWelcomeMenu(to);
-}
-
-export default async function handler(req, res) {
+export default async function handler(
+  req,
+  res
+) {
+  /*
+   * Meta verifica el webhook mediante GET.
+   */
   if (req.method === "GET") {
-    const mode = req.query["hub.mode"];
-    const token = req.query["hub.verify_token"];
-    const challenge = req.query["hub.challenge"];
+    const mode =
+      req.query["hub.mode"];
 
-    if (mode === "subscribe" && token === process.env.VERIFY_TOKEN) {
-      return res.status(200).send(challenge);
+    const token =
+      req.query[
+        "hub.verify_token"
+      ];
+
+    const challenge =
+      req.query[
+        "hub.challenge"
+      ];
+
+    if (
+      mode === "subscribe" &&
+      token ===
+        process.env.VERIFY_TOKEN
+    ) {
+      return res
+        .status(200)
+        .send(challenge);
     }
 
-    return res.status(403).send("Token de verificación incorrecto");
+    return res
+      .status(403)
+      .send(
+        "Token de verificación incorrecto"
+      );
   }
 
+  /*
+   * Meta entrega mensajes mediante POST.
+   */
   if (req.method === "POST") {
     try {
-      const entries = req.body?.entry || [];
+      const entries =
+        req.body?.entry || [];
 
-      for (const entry of entries) {
-        for (const change of entry?.changes || []) {
-          for (const message of change?.value?.messages || []) {
-            const from = message?.from;
-            const messageId = message?.id;
+      for (
+        const entry of entries
+      ) {
+        const changes =
+          entry?.changes || [];
 
-            if (!from || !messageId) continue;
+        for (
+          const change of changes
+        ) {
+          const messages =
+            change
+              ?.value
+              ?.messages || [];
 
-            const claimed = await claimMessage(messageId);
-            if (!claimed) {
-              console.log("Mensaje duplicado ignorado:", messageId);
+          for (
+            const message of messages
+          ) {
+            const from =
+              message?.from;
+
+            const messageId =
+              message?.id;
+
+            if (
+              !from ||
+              !messageId
+            ) {
               continue;
             }
+
+            /*
+             * Ignorar reintentos duplicados.
+             */
+            if (
+              processedMessageIds
+                .has(messageId)
+            ) {
+              console.log(
+                "Mensaje duplicado ignorado:",
+                messageId
+              );
+
+              continue;
+            }
+
+            if (
+              processedMessageIds
+                .size >= 500
+            ) {
+              processedMessageIds
+                .clear();
+            }
+
+            processedMessageIds
+              .add(messageId);
 
             console.log(
               "Mensaje recibido:",
               JSON.stringify({
                 from,
-                type: message?.type || null,
+
+                type:
+                  message?.type ||
+                  null,
+
                 messageId,
-                text: message?.text?.body || null,
-                action: extractAction(message) || null
+
+                action:
+                  message
+                    ?.interactive
+                    ?.button_reply
+                    ?.id ||
+
+                  message
+                    ?.interactive
+                    ?.list_reply
+                    ?.id ||
+
+                  null
               })
             );
 
-            await routeMessage(from, message);
+            await routeMessage(
+              from,
+              message
+            );
           }
         }
       }
 
-      return res.status(200).json({ received: true });
+      return res
+        .status(200)
+        .json({
+          received: true
+        });
     } catch (error) {
-      console.error("Error procesando webhook:", error?.stack || error);
-      return res.status(200).json({
-        received: true,
-        bot_error: true,
-        error: error?.message || "Error desconocido"
-      });
+      console.error(
+        "Error procesando webhook:",
+
+        error?.stack ||
+        error?.message ||
+        error
+      );
+
+      /*
+       * Se devuelve 200 para evitar que Meta
+       * repita indefinidamente el webhook.
+       */
+      return res
+        .status(200)
+        .json({
+          received: true,
+
+          bot_error: true,
+
+          error:
+            error?.message ||
+            "Error desconocido"
+        });
     }
   }
 
-  res.setHeader("Allow", "GET, POST");
-  return res.status(405).send("Método no permitido");
+  res.setHeader(
+    "Allow",
+    "GET, POST"
+  );
+
+  return res
+    .status(405)
+    .send(
+      "Método no permitido"
+    );
 }
