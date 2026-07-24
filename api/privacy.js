@@ -40,12 +40,12 @@ export default function handler(req, res) {
         <h2>Eliminación de datos</h2>
         <p>
           Para solicitar información o eliminación de datos, escribe a:
-          <strong>REEMPLAZA-CON-TU-CORREO@gmail.com</strong>.
+          <strong>rpalpa8@gmail.com</strong>.
         </p>
 
         <h2>Contacto</h2>
         <p>
-          Correo: <strong>REEMPLAZA-CON-TU-CORREO@gmail.com</strong>
+          Correo: <strong>rpalpa8@gmail.com</strong>
         </p>
       </body>
     </html>
